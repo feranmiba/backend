@@ -41,7 +41,7 @@ const db = new pg.Client({
 db.connect()
 
 app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', 'https://easy-i6gx.onrender.com');
+    res.setHeader('Access-Control-Allow-Origin', 'https://learn2024.netlify.app');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('Access-Control-Allow-Credentials', true);
