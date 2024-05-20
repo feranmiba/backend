@@ -45,6 +45,17 @@ app.use((req, res, next) => {
     next();
   });
 
+app.get("/", function (req, res) {
+    res.sendFile(
+        pth.join(__dirname, "../client/build/index.html"),
+        function(err) {
+            if (err) {
+                res.status(500).send(err)
+            }
+        }
+    )
+})
+
 
 app.post("/signup", async (req, res) => {
     const email = req.body.email
