@@ -41,7 +41,7 @@ const db = new pg.Client({
 db.connect()
 
 app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', 'http://localhost:3001');
+    res.setHeader('Access-Control-Allow-Origin', 'https://easy-i6gx.onrender.com');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('Access-Control-Allow-Credentials', true);
@@ -50,6 +50,7 @@ app.use((req, res, next) => {
 
 
 app.post("/signup", async (req, res) => {
+    console.log(req.body)
     const email = req.body.email
     const username = req.body.username
     const password= req.body.password
