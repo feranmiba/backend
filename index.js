@@ -12,20 +12,20 @@ const saltRounds = 10;
 
 env.config()
 
-app.use(
-    session({
-        secret: process.env.SESSION_SECRET,
-        resave: false,
-        saveUninitialized: true,
-      })
-)
+// app.use(
+//     session({
+//         secret: process.env.SESSION_SECRET,
+//         resave: false,
+//         saveUninitialized: true,
+//       })
+// )
 
 app.use(bodyParser.urlencoded({ extended: true }))
 app.use(bodyParser.json())
 app.use(express.static("public"))
 
 app.use(passport.initialize())
-app.use(passport.session())
+// app.use(passport.session())
 
 const db = new pg.Client({
     user: process.env.PG_USER,
@@ -44,17 +44,6 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Credentials', true);
     next();
   });
-
-app.get("/", function (req, res) {
-    res.sendFile(
-        pth.join(__dirname, "../client/build/index.html"),
-        function(err) {
-            if (err) {
-                res.status(500).send(err)
-            }
-        }
-    )
-})
 
 
 app.post("/signup", async (req, res) => {
