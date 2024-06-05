@@ -4,7 +4,6 @@ import bodyParser from "body-parser"
 import env from "dotenv"
 import bcrypt from "bcrypt"
 import passport from "passport"
-import session from "express-session"
 
 const app = express();
 const port = process.env.PORT || 4000;
@@ -22,7 +21,8 @@ env.config()
 
 app.use(bodyParser.urlencoded({ extended: true }))
 app.use(bodyParser.json())
-app.use(express.static("public"))
+app.use(bodyParser.text())
+app.use(express.static("public"))  
 
 app.use(passport.initialize())
 // app.use(passport.session())
@@ -36,7 +36,7 @@ const db = new pg.Client({
     ssl: {
         rejectUnauthorized: true, 
     },
-})
+})  
 
 db.connect()
 
@@ -46,16 +46,190 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('Access-Control-Allow-Credentials', true);
     next();
-  });
+   });
 
 
+
+
+
+
+
+//COURSES FORMAT
+var courses = [
+    {
+        id: 1, 
+        courseName: "ENGLISH",
+        courseCode: 101,
+        uniqueCode: "ENG 101" ,
+        courseContent:[
+            "Intro to English", 
+            "Nouns" , 
+            "Pronouns", 
+            "Verbs", 
+            "Intejection", 
+            "Conjuction"
+        ]
+    },
+    {
+        id: 2, 
+        courseName: "ENGLISH",
+        courseCode: 102, 
+        uniqueCode: "ENG 102" ,
+        courseContent:[
+            "Sentences", 
+            "Words" , 
+            "Comprehension", 
+            "Insight of english", 
+            "Damn", 
+            "Conjuction"
+        ]
+    },
+    {
+        id: 3, 
+        courseName: "Mathematics",
+        courseCode: 101, 
+        uniqueCode: "MAT 101" ,
+        courseContent:[
+            "Intro to Maths", 
+            "History on Mathematics" , 
+            "Basic Arithmetic", 
+            "Abacus", 
+            "Complex Arithmetic", 
+            "Equations"
+        ]
+    },
+    {
+        id: 4, 
+        courseName: "Mathematics",
+        courseCode: 102,
+        uniqueCode: "MAT 102" , 
+        courseContent:[
+            "Equations II", 
+            "Arithmetic II" , 
+            "Basic Arithmetic", 
+            "Abacus", 
+            "Complex Arithmetic", 
+            "Equations"
+        ]
+    },
+]
+var courseExplain = [
+    {
+        id: 1,
+        courseTopic: "Intro to English",
+        courseVideo: "link", 
+        courseContent: "English is a language which originated from ............."
+    },
+    {
+        id: 2,
+        courseTopic: "Nouns",
+        courseVideo: "link", 
+        courseContent: "English is a language which originated from ............."
+    },
+    {
+        id: 3,
+        courseTopic: "Pronouns",
+        courseVideo: "link", 
+        courseContent: "English is a language which originated from ............."
+    },
+    {
+        id: 4,
+        courseTopic: "Verbs",
+        courseVideo: "link", 
+        courseContent: "English is a language which originated from ............."
+    },
+    {
+        id: 5,
+        courseTopic: "Intro to Maths",
+        courseVideo: "link", 
+        courseContent: "Mathematics is a way of ............."
+    },
+    {
+        id: 6,
+        courseTopic: "Basic Arithmetic",
+        courseVideo: "link", 
+        courseContent: "Mathematics is a way of ............."
+    },
+    {
+        id: 7,
+        courseTopic: "Abacus",
+        courseVideo: "link", 
+        courseContent: "Mathematics is a way of ............."
+    },
+    {
+        id: 8,
+        courseTopic: "Equations II",
+        courseVideo: "link", 
+        courseContent: "Mathematics is a way of ............."
+    },
+    {
+        id: 9,
+        courseTopic: "Arithmetic II",
+        courseVideo: "link", 
+        courseContent: "Mathematics is a way of ............."
+    },
+    {
+        id: 10,
+        courseTopic: "Equations",
+        courseVideo: "link", 
+        courseContent: "Mathematics is a way of ............."
+    }
+]
+
+app.get("/courses/:uniquecode", (req, res) => {
+    const uniqueCode = String(req.params.uniquecode)
+    const getCourses = courses.find((course) => course.uniqueCode === uniqueCode)
+    res.json(getCourses)
+})
+
+app.get("/coursetopic", (req, res) => {
+    const topic = req.query.topic
+    const getTopic = courseExplain.filter((course) => course.courseTopic === topic)
+    res.json(getTopic)
+})
+
+//THE END
+
+//SAVE COURSES
+//get id of current user
+app.post("/id", async (req, res) => {  
+    const emails = req.body.email
+    const course = req.body.course
+    const code = req.body.courseCode
+try {
+    const result = await db.query("SELECT id FROM student_profile  WHERE email = $1", [emails])
+    const getID = result.rows[0].id
+    const saveCourse = await db.query("INSERT INTO course_chosen (course, course_code, student_id) VALUES ($1, $2, $3)", [course, code,  getID])
+    res.status(200).json({ success: "Course Registered successfully", id: getID })
+} catch (error) { 
+    console.log(error)
+}
+ })
+
+
+ //get Registered courses 
+app.post("/courses-registered", async(req, res) => {
+    const emails = req.body.email
+    try {
+        const result = await db.query("SELECT id FROM student_profile  WHERE email = $1", [emails])
+        const getID = result.rows[0].id
+        const results = await db.query("SELECT *  FROM course_chosen WHERE student_id  = $1", [getID])
+        // console.log(results.rows)
+        const courses = results.rows
+        res.status(200).json(courses)
+    } catch (error) {
+      console.log(error)  
+    }
+ })
+
+
+
+
+//SIGN AND LOGIN FORMAT 
 app.post("/signup", async (req, res) => {
-    console.log(req.body)
     const email = req.body.email
     const username = req.body.username
     const password= req.body.password
-
-
     try {
         const checkIfUseExist = await db.query("SELECT * FROM student_profile WHERE email = $1", [email])
         if (checkIfUseExist.rows.length > 0) {
@@ -80,8 +254,6 @@ app.post("/signup", async (req, res) => {
 app.post("/google/signup", async (req, res) => {
     const username = req.body.name
     const email = req.body.email
-
-
     try {
         const checkIfUseExist = await db.query("SELECT * FROM student_profile WHERE email = $1", [email])
         if (checkIfUseExist.rows.length > 0) {
@@ -127,9 +299,7 @@ app.post("/login", async (req, res) => {
     }
 })
 app.post("/google/login", async (req, res) => {
-    console.log(req.body)
     const email = req.body.email
-    console.log(email)
     try {
         const checkIfExist = await db.query("SELECT * FROM student_profile WHERE email = $1", [email])
         if (checkIfExist.rows.length > 0) {
