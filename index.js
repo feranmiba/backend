@@ -6,7 +6,7 @@ import bcrypt from "bcrypt"
 import passport from "passport"
 
 const app = express();
-const port = process.env.PORT || 4000;
+const port = process.env.PORT || 3000;
 const saltRounds = 10;
 
 env.config()
@@ -91,11 +91,10 @@ var courses = [
         uniqueCode: "MAT 101" ,
         courseContent:[
             "Intro to Maths", 
-            "History on Mathematics" , 
             "Basic Arithmetic", 
-            "Abacus", 
-            "Complex Arithmetic", 
-            "Equations"
+            "Time", 
+            "Money",
+            "Complex Arithmetic"    
         ]
     },
     {
@@ -117,62 +116,102 @@ var courseExplain = [
     {
         id: 1,
         courseTopic: "Intro to English",
-        courseVideo: "link", 
-        courseContent: "English is a language which originated from ............."
+        courseVideo: "https://www.youtube.com/embed/CbPy_CjJR90?si=aoUXUBE5sa-fklYd", 
+        courseContent: "English language, West Germanic language of the Indo-European language family that is closely related to the Frisian, German, and Dutch (in Belgium called Flemish) languages. English originated in England and is the dominant language of the United States, the United Kingdom, Canada, Australia, Ireland, New Zealand, and various island nations in the Caribbean Sea and the Pacific Ocean.English is the most spoken language in the world, primarily due to the global influences of the former British Empire. the have a lot of grammars classification which are :",
+        types: [
+            'Nouns and noun phrases',
+            'Adjectives', 
+            'Determiners',
+            'Pronouns, case, and person',
+            'Prepositions',
+            'Verbs and verb phrases',
+            'Tense, aspect and mood',
+            'Adverbs'
+        ]
     },
     {
         id: 2,
         courseTopic: "Nouns",
-        courseVideo: "link", 
-        courseContent: "English is a language which originated from ............."
+        courseVideo: "https://www.youtube.com/embed/tquecIG-Pws?si=eaVIlymoGv9o67RZ", 
+        courseContent: "A noun is a word that names something, such as a person, place, thing, or idea. In a sentence, nouns can play the role of subject, direct object, indirect object, subject complement, object complement, appositive, or modifier.",
+        types: [
+            ' common nouns',
+            'Countable nouns', 
+            'Uncountable nouns',
+            ' Possessive nouns',
+        ]
     },
     {
         id: 3,
         courseTopic: "Pronouns",
-        courseVideo: "link", 
-        courseContent: "English is a language which originated from ............."
+        courseVideo: "https://www.youtube.com/embed/c4300UidkFg?si=JNNoGr0tNPnodPti", 
+        courseContent: 'Pronouns are words we use instead of repeating nouns. They help us talk about people, things, or ideas without always saying their names. For example, instead of saying "John went to the store," you can say "He went to the store." This makes sentences shorter and easier to understand. There are different types of pronouns:',
+        types: [
+            'Personal Pronouns',
+            'Demonstrative Pronouns:', 
+            'Relative Pronouns',
+            'Reflexive and Intensive Pronouns',
+        ]
     },
     {
         id: 4,
         courseTopic: "Verbs",
-        courseVideo: "link", 
-        courseContent: "English is a language which originated from ............."
+        courseVideo: "https://www.youtube.com/embed/DzmmSbLwOGo?si=7JcDPqtzguKQBZ7n", 
+        courseContent: 'Verbs are words that tell us what someone or something is doing or feeling. They show actions like "run," "eat," or "play," or describe states like "is," "seems," or "becomes." Verbs can also help us understand when something happened (past, present, future) and whether the action is being done to someone or by someone. They"re crucial for making sentences make sense and for expressing ideas clearly in both talking and writing.',
+        types: [
+            'Action Verbs',
+            'Linking Verbs', 
+            'Auxiliary Verbs',
+            'Tense',
+        ]
     },
     {
         id: 5,
         courseTopic: "Intro to Maths",
-        courseVideo: "link", 
-        courseContent: "Mathematics is a way of ............."
+        courseVideo: "https://www.youtube.com/embed/aaJo07SrSWQ?si=U9LLmjxILuO14-uK", 
+        courseContent: "Introduction to mathematics is about understanding basic concepts that form the foundation of math. It begins with numbers (like 1, 2, 3...) and how we use them for counting and measuring things.Math also includes operations like adding, subtracting, multiplying, and dividing, which help us solve problems. Shapes, patterns, and measurements (like length or weight) are also part of math. Learning math helps us solve everyday problems, understand the world better, and even discover new things. It's like a language that helps us describe and make sense of the world around us."
     },
     {
         id: 6,
         courseTopic: "Basic Arithmetic",
-        courseVideo: "link", 
-        courseContent: "Mathematics is a way of ............."
+        courseVideo: "https://www.youtube.com/embed/IwW0GJWKH98?si=sFvcKeEkXr_bB6gW", 
+        courseContent: "Basic arithmetic is the fundamental part of mathematics that deals with simple operations involving numbers. It includes four main operations:",
+        types: [
+            'ADDITION: Combining two or more numbers to find a total. For example, 2+3=5.',
+            'SUBTRACTION: Finding the difference between two numbers. For example, 5−2=3.', 
+            'MULTIPLICATION: Repeated addition of the same number. For example, 2×3=6 means adding 2 three times.',
+            'DIVISION: Splitting a number into equal parts or finding out how many times one number fits into another. For example, 6÷2=3 means dividing 6 into 2 equal groups gives 3 in each group.',
+        ]
     },
     {
         id: 7,
-        courseTopic: "Abacus",
-        courseVideo: "link", 
-        courseContent: "Mathematics is a way of ............."
+        courseTopic: "Time",
+        courseVideo: "https://www.youtube.com/embed/QU-XUmujbuM?si=D5BX3HS3TU7lqCpO", 
+        courseContent: "Time is how we measure moments and the order in which things happen. It helps us know when things occur, like when to wake up, eat, or go to bed. We use clocks and calendars to keep track of time, whether it's seconds, hours, days, or years. Time is important for planning our days and understanding the past, present, and future.",
+        types: [
+            '60 seconds make 1 minute',
+            '60 minute adds up to 1 hour', 
+            '24 hours makes up a day',
+            '7 days makes up 1 week',
+        ]
     },
     {
         id: 8,
         courseTopic: "Equations II",
-        courseVideo: "link", 
-        courseContent: "Mathematics is a way of ............."
+        courseVideo: "", 
+        courseContent: "Coming soon"
     },
     {
         id: 9,
         courseTopic: "Arithmetic II",
-        courseVideo: "link", 
-        courseContent: "Mathematics is a way of ............."
+        courseVideo: "", 
+        courseContent: "Coming soon"
     },
     {
         id: 10,
         courseTopic: "Equations",
-        courseVideo: "link", 
-        courseContent: "Mathematics is a way of ............."
+        courseVideo: "", 
+        courseContent: "Coming soon"
     }
 ]
 
