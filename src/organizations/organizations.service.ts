@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -9,6 +10,10 @@ import { OrgMemberRole, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { nextAvailableSlug, slugify } from '../common/utils/slug';
+import {
+  consumeStellarProof,
+  STELLAR_PROOF_PURPOSE,
+} from '../common/stellar-proof';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
 
@@ -21,6 +26,13 @@ export class OrganizationsService {
 
   async create(userId: string, dto: CreateOrganizationDto) {
     const slug = await this.resolveSlug(dto);
+    await consumeStellarProof(
+      this.prisma,
+      userId,
+      STELLAR_PROOF_PURPOSE.ORGANIZATION_ACCOUNT,
+      dto.stellarAccount,
+      dto.stellarAccountSignature,
+    );
 
     const org = await this.prisma.$transaction(async (tx) => {
       const created = await tx.organization.create({
@@ -105,6 +117,20 @@ export class OrganizationsService {
       OrgMemberRole.OWNER,
       OrgMemberRole.ADMIN,
     ]);
+    if (dto.stellarAccount !== undefined) {
+      if (!dto.stellarAccountSignature) {
+        throw new BadRequestException(
+          'stellarAccountSignature is required when changing stellarAccount',
+        );
+      }
+      await consumeStellarProof(
+        this.prisma,
+        userId,
+        STELLAR_PROOF_PURPOSE.ORGANIZATION_ACCOUNT,
+        dto.stellarAccount,
+        dto.stellarAccountSignature,
+      );
+    }
     const org = await this.prisma.organization.update({
       where: { id },
       // Fields are listed explicitly so `slug` can never be written here.

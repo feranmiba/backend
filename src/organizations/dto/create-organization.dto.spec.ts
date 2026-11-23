@@ -10,6 +10,7 @@ function build(overrides: Record<string, unknown> = {}) {
     slug: 'test-org',
     industry: 'CONCERTS',
     stellarAccount: VALID_KEY,
+    stellarAccountSignature: 'c2lnbmF0dXJl',
     ...overrides,
   });
 }
@@ -38,6 +39,15 @@ describe('CreateOrganizationDto', () => {
   it('rejects a name shorter than 2 characters', async () => {
     const errors = await validate(build({ name: 'A' }));
     expect(errors.some((e) => e.property === 'name')).toBe(true);
+  });
+
+  it('requires a signed proof of the stellarAccount (#595)', async () => {
+    const errors = await validate(
+      build({ stellarAccountSignature: undefined }),
+    );
+    expect(errors.some((e) => e.property === 'stellarAccountSignature')).toBe(
+      true,
+    );
   });
 
   it('rejects an invalid stellarAccount', async () => {

@@ -1,4 +1,5 @@
 import {
+  IsBase64,
   IsEnum,
   IsInt,
   IsOptional,
@@ -35,6 +36,10 @@ export class CreateOrganizationDto {
 
   @IsStellarPublicKey()
   stellarAccount!: string;
+
+  /** #595 — base64 signature over the challenge issued for `stellarAccount`. */
+  @IsBase64()
+  stellarAccountSignature!: string;
 
   @IsOptional()
   @IsUrl({ require_protocol: true })

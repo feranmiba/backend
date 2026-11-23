@@ -99,6 +99,12 @@ model User {
   role             UserRole             @default(ATTENDEE)
   /// Stellar (G...) address used to receive tickets and settle payments.
   stellarPublicKey String?              @unique
+  /// #599 — set once the user proves control of their email address.
+  emailVerifiedAt  DateTime?
+  /// #599 — SHA-256 of the outstanding verification token; cleared when used.
+  emailVerificationTokenHash String?    @unique
+  emailVerificationExpiresAt DateTime?
+  stellarChallenges StellarChallenge[]
   memberships      OrganizationMember[]
   tickets          Ticket[]
   resaleListings   ResaleListing[]
@@ -111,6 +117,21 @@ model User {
   acceptedInvitations OrganizationInvitation[] @relation("InvitationAcceptor")
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
+}
+
+/// #595 / #596 — single-use nonce a user signs to prove control of a Stellar account.
+model StellarChallenge {
+  id               String    @id @default(uuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose          String
+  stellarPublicKey String
+  nonce            String
+  expiresAt        DateTime
+  usedAt           DateTime?
+  createdAt        DateTime  @default(now())
+
+  @@index([userId, purpose, stellarPublicKey])
 }
 
 model Organization {

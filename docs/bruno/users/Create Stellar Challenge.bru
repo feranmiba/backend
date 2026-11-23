@@ -1,0 +1,21 @@
+meta {
+  name: Create Stellar Challenge
+  type: http
+}
+
+post {
+  url: {{baseUrl}}/v1/users/me/stellar-challenge
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "stellarPublicKey": "{{publicKey}}",
+    "purpose": "string"
+  }
+}

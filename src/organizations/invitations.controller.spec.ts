@@ -6,6 +6,7 @@ import {
   server,
   TEST_USER,
 } from '../../test/helpers/controller-app';
+import { EmailVerifiedGuard } from '../auth/guards/email-verified.guard';
 import { InvitationsController } from './invitations.controller';
 import { InvitationsService } from './invitations.service';
 
@@ -17,6 +18,7 @@ describe('InvitationsController', () => {
     app = await createControllerApp({
       controller: InvitationsController,
       service: { provide: InvitationsService, useValue: service },
+      passthrough: { guards: [EmailVerifiedGuard] },
     });
   });
   afterAll(() => app.close());

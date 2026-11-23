@@ -1,4 +1,5 @@
 import {
+  IsBase64,
   IsEnum,
   IsInt,
   IsOptional,
@@ -32,6 +33,11 @@ export class UpdateOrganizationDto {
   @IsOptional()
   @IsStellarPublicKey()
   stellarAccount?: string;
+
+  /** #595 — required whenever `stellarAccount` is changed. */
+  @IsOptional()
+  @IsBase64()
+  stellarAccountSignature?: string;
 
   @IsOptional()
   @IsUrl({ require_protocol: true })

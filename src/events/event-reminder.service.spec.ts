@@ -24,6 +24,23 @@ describe('EventReminderService', () => {
     jest.useRealTimers();
   });
 
+  it('only targets ticket holders with a verified email (#599)', async () => {
+    prisma.event.findMany.mockResolvedValue([]);
+
+    await service.sendUpcomingEventReminders();
+
+    expect(prisma.event.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: {
+          tickets: {
+            where: { owner: { emailVerifiedAt: { not: null } } },
+            select: { ownerId: true },
+          },
+        },
+      }),
+    );
+  });
+
   it('sends reminders for published events starting within 24h', async () => {
     prisma.event.findMany.mockResolvedValue([
       {

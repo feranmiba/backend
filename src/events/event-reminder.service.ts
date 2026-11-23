@@ -51,6 +51,8 @@ export class EventReminderService implements OnModuleInit {
       },
       include: {
         tickets: {
+          // #599 — reminders only go to verified addresses.
+          where: { owner: { emailVerifiedAt: { not: null } } },
           select: {
             ownerId: true,
           },

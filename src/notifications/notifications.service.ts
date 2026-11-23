@@ -26,6 +26,15 @@ export class NotificationService {
     @Inject(LogEmailProvider) private readonly provider: EmailProvider,
   ) {}
 
+  /** #599 — sends the one-time token that proves the recipient controls `to`. */
+  sendEmailVerification(to: string, token: string): Promise<void> {
+    return this.provider.send({
+      to,
+      subject: 'Verify your email address',
+      text: `Use this token to verify your email address (valid for 24 hours):\n\n${token}\n`,
+    });
+  }
+
   sendTicketReceipt(input: {
     to: string;
     buyerName: string;

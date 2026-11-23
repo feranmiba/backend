@@ -10,6 +10,7 @@ import {
   server,
   TEST_USER,
 } from '../../test/helpers/controller-app';
+import { EmailVerifiedGuard } from '../auth/guards/email-verified.guard';
 import { OrganizationsController } from './organizations.controller';
 import { OrganizationsService } from './organizations.service';
 
@@ -30,6 +31,7 @@ describe('OrganizationsController', () => {
     app = await createControllerApp({
       controller: OrganizationsController,
       service: { provide: OrganizationsService, useValue: service },
+      passthrough: { guards: [EmailVerifiedGuard] },
     });
   });
   afterAll(() => app.close());
@@ -40,6 +42,7 @@ describe('OrganizationsController', () => {
     slug: 'acme-events',
     industry: 'CONCERTS',
     stellarAccount: VALID_KEY,
+    stellarAccountSignature: 'c2lnbmF0dXJl',
   };
 
   it.each([

@@ -1,5 +1,6 @@
 import { Body, Controller, Param, Post, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { EmailVerifiedGuard } from '../auth/guards/email-verified.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { CurrentUserPayload } from '../auth/decorators/current-user.decorator';
 import { InvitationsService } from './invitations.service';
@@ -20,6 +21,7 @@ export class InvitationsController {
   }
 
   @Post(':id/invitations')
+  @UseGuards(EmailVerifiedGuard)
   create(
     @CurrentUser() user: CurrentUserPayload,
     @Param('id') id: string,

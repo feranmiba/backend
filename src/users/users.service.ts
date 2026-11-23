@@ -5,6 +5,12 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  consumeStellarProof,
+  issueStellarChallenge,
+  STELLAR_PROOF_PURPOSE,
+} from '../common/stellar-proof';
+import { StellarChallengeDto } from './dto/stellar-challenge.dto';
 
 @Injectable()
 export class UsersService {
@@ -53,7 +59,21 @@ export class UsersService {
     }
   }
 
-  async connectWallet(userId: string, stellarPublicKey: string) {
+  /** #596 — issues the message the user must sign to prove control of `stellarPublicKey`. */
+  createStellarChallenge(userId: string, dto: StellarChallengeDto) {
+    return issueStellarChallenge(
+      this.prisma,
+      userId,
+      dto.purpose,
+      dto.stellarPublicKey,
+    );
+  }
+
+  async connectWallet(
+    userId: string,
+    stellarPublicKey: string,
+    signature: string,
+  ) {
     try {
       const [user, ticketCount, activeListingCount] = await Promise.all([
         this.prisma.user.findUnique({
@@ -78,6 +98,14 @@ export class UsersService {
           'You cannot change your wallet while holding tickets or active listings',
         );
       }
+
+      await consumeStellarProof(
+        this.prisma,
+        userId,
+        STELLAR_PROOF_PURPOSE.WALLET_CONNECT,
+        stellarPublicKey,
+        signature,
+      );
 
       return await this.prisma.user.update({
         where: { id: userId },

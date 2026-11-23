@@ -12,6 +12,17 @@ describe('UpdateOrganizationDto', () => {
     expect(errors).toHaveLength(0);
   });
 
+  it('accepts a stellarAccount change that carries a signature', async () => {
+    const errors = await validate(
+      build({
+        stellarAccount:
+          'GBAHZWO3UI3GAHPQCPSW6IR5N7HJ4UBRZNAFMSYB6DAKVNHQDOZIV2YJ',
+        stellarAccountSignature: 'c2lnbmF0dXJl',
+      }),
+    );
+    expect(errors).toHaveLength(0);
+  });
+
   it('accepts a partial update', async () => {
     const errors = await validate(
       build({ name: 'Renamed Org', websiteUrl: 'https://example.com' }),
