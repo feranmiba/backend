@@ -1016,10 +1016,26 @@ export class TicketsService {
     const take = Math.min(Math.max(limit, 1), 100);
     const cursorFilter = cursor ? this.resaleCursorWhere(cursor) : undefined;
 
+    const now = new Date();
     const rows = await this.prisma.resaleListing.findMany({
       where: {
         status: ResaleListingStatus.ACTIVE,
-        ...(cursorFilter ?? {}),
+        // #521 — hide listings nobody can buy: the contract rejects
+        // `buy_resale` once the event has started (its resale cutoff falls
+        // before `startsAt`), and a cancelled, unpublished or deleted event's
+        // tickets are not for sale. A listing past its own `expiresAt` is
+        // also dropped before the expiry job gets to it.
+        ticket: {
+          event: {
+            status: EventStatus.PUBLISHED,
+            deletedAt: null,
+            startsAt: { gt: now },
+          },
+        },
+        AND: [
+          { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+          ...(cursorFilter ? [cursorFilter] : []),
+        ],
       },
       // #374 — the marketplace is readable by any authenticated user, so the
       // query must project only the fields it renders. Never include the whole

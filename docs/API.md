@@ -1421,7 +1421,11 @@ Returns the new listing row; the ticket moves to `status: "RESALE"`.
 
 #### `GET /v1/tickets/resale`
 
-Marketplace of `ACTIVE` listings, newest first, cursor paginated.
+Marketplace of `ACTIVE` listings, newest first, cursor paginated. Only
+listings a buyer can still complete are returned: the event must be
+`PUBLISHED`, not deleted, and not yet started (the contract rejects
+`buy_resale` after its resale cutoff), and the listing must not be past its
+own `expiresAt`.
 
 | query | type | rules |
 |---|---|---|

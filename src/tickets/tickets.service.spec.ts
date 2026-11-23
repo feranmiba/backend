@@ -16,7 +16,7 @@ import {
   TicketTypeSoldOutError,
 } from '../common/errors/domain.error';
 import { UNASSIGNED_SEAT } from '../common/constants/seat.constant';
-import { Prisma } from '@prisma/client';
+import { EventStatus, Prisma, ResaleListingStatus } from '@prisma/client';
 import { TicketsService } from './tickets.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { OrganizationsService } from '../organizations/organizations.service';
@@ -1816,6 +1816,69 @@ describe('TicketsService', () => {
 
       expect(page.items[0].royaltyFee).toBe(0n);
       expect(page.items[0].sellerProceeds).toBe(5_000n);
+    });
+  });
+
+  describe('findActiveResaleListings — stale listings (#521)', () => {
+    beforeEach(() => {
+      jest.useFakeTimers({ now: new Date('2026-11-23T12:00:00.000Z') });
+      prisma.resaleListing.findMany.mockResolvedValue([]);
+    });
+    afterEach(() => jest.useRealTimers());
+
+    const whereOf = () =>
+      (
+        prisma.resaleListing.findMany.mock.calls[0] as [
+          { where: Record<string, unknown> },
+        ]
+      )[0].where;
+
+    it('only lists tickets for published, live events that have not started', async () => {
+      await service.findActiveResaleListings(undefined, 10);
+
+      expect(whereOf()).toMatchObject({
+        status: ResaleListingStatus.ACTIVE,
+        ticket: {
+          event: {
+            status: EventStatus.PUBLISHED,
+            deletedAt: null,
+            startsAt: { gt: new Date('2026-11-23T12:00:00.000Z') },
+          },
+        },
+      });
+    });
+
+    it('drops listings past their own expiresAt', async () => {
+      await service.findActiveResaleListings(undefined, 10);
+
+      expect(whereOf().AND).toContainEqual({
+        OR: [
+          { expiresAt: null },
+          { expiresAt: { gt: new Date('2026-11-23T12:00:00.000Z') } },
+        ],
+      });
+    });
+
+    it('keeps the cursor condition alongside the stale-listing filters', async () => {
+      const cursor = Buffer.from(
+        '2026-09-01T00:00:00.000Z|listing-9',
+        'utf8',
+      ).toString('base64url');
+
+      await service.findActiveResaleListings(cursor, 10);
+
+      const where = whereOf();
+      expect(where.AND).toHaveLength(2);
+      expect(where.AND).toContainEqual({
+        OR: [
+          { createdAt: { lt: new Date('2026-09-01T00:00:00.000Z') } },
+          {
+            createdAt: new Date('2026-09-01T00:00:00.000Z'),
+            id: { lt: 'listing-9' },
+          },
+        ],
+      });
+      expect(where.ticket).toBeDefined();
     });
   });
 
