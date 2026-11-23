@@ -1,17 +1,19 @@
 import { Logger, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BullMqWebhookQueue } from './bullmq-webhook-queue';
-import type { BullMqLike } from './bullmq-webhook-queue';
+import type { BullMqLike, WebhookFailureCallback } from './bullmq-webhook-queue';
 import { DisabledWebhookQueue } from './disabled-webhook-queue';
 import { WEBHOOK_QUEUE } from './webhook-queue';
 import type { WebhookQueue } from './webhook-queue';
 import { PrismaModule } from '../prisma/prisma.module';
+import { PrismaService } from '../prisma/prisma.service';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { WebhooksController } from './webhooks.controller';
 import { WebhooksService } from './webhooks.service';
 
 const DEFAULT_ATTEMPTS = 5;
 const DEFAULT_BACKOFF_MS = 5_000;
+const CONSECUTIVE_FAILURES_THRESHOLD = 5;
 
 /**
  * `bullmq` is loaded only when `WEBHOOK_QUEUE_ENABLED=true`, so a deployment
@@ -64,6 +66,7 @@ function positiveInt(value: unknown, fallback: number): number {
 
 export async function createWebhookQueue(
   config: ConfigService,
+  prisma: PrismaService,
   load: () => Promise<BullMqLike> = loadBullMq,
 ): Promise<WebhookQueue> {
   const enabled =
@@ -77,6 +80,38 @@ export async function createWebhookQueue(
   if (!url) {
     throw new Error('REDIS_URL is required when WEBHOOK_QUEUE_ENABLED=true');
   }
+
+  // #547 — callback to disable endpoints after N consecutive failures
+  const onFinalFailure: WebhookFailureCallback = async (delivery, error) => {
+    const logger = new Logger('WebhookQueue');
+    const endpoint = await prisma.webhookEndpoint.findFirst({
+      where: { url: delivery.url, isActive: true },
+    });
+
+    if (!endpoint) {
+      return;
+    }
+
+    const newCount = endpoint.consecutiveFailureCount + 1;
+    const shouldDisable = newCount >= CONSECUTIVE_FAILURES_THRESHOLD;
+
+    await prisma.webhookEndpoint.update({
+      where: { id: endpoint.id },
+      data: {
+        consecutiveFailureCount: newCount,
+        lastFailureReason: error.message.slice(0, 500),
+        lastFailedAt: new Date(),
+        isActive: shouldDisable ? false : true,
+      },
+    });
+
+    if (shouldDisable) {
+      logger.warn(
+        `Webhook endpoint ${endpoint.id} (${delivery.url}) disabled after ${newCount} consecutive failures: ${error.message}`,
+      );
+    }
+  };
+
   const queue = BullMqWebhookQueue.create(await load(), {
     connection: redisConnectionFromUrl(url),
     attempts: positiveInt(
@@ -87,6 +122,7 @@ export async function createWebhookQueue(
       config.get<number>('WEBHOOK_QUEUE_BACKOFF_MS'),
       DEFAULT_BACKOFF_MS,
     ),
+    onFinalFailure,
   });
   new Logger('WebhookQueue').log('Using Redis-backed webhook queue');
   return queue;
@@ -99,8 +135,9 @@ export async function createWebhookQueue(
     WebhooksService,
     {
       provide: WEBHOOK_QUEUE,
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => createWebhookQueue(config),
+      inject: [ConfigService, PrismaService],
+      useFactory: (config: ConfigService, prisma: PrismaService) =>
+        createWebhookQueue(config, prisma),
     },
   ],
   exports: [WEBHOOK_QUEUE, WebhooksService],

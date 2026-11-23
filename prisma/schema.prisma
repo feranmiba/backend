@@ -433,15 +433,18 @@ model ScannerDevice {
 }
 
 model WebhookEndpoint {
-  id             String       @id @default(uuid())
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  organizationId String
-  url            String
-  secret         String
-  events         String       @default("*")
-  isActive       Boolean      @default(true)
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  id                      String       @id @default(uuid())
+  organization            Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId          String
+  url                     String
+  secret                  String
+  events                  String       @default("*")
+  isActive                Boolean      @default(true)
+  consecutiveFailureCount Int          @default(0)
+  lastFailureReason       String?
+  lastFailedAt            DateTime?
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
 
   @@index([organizationId])
 }

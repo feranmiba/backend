@@ -48,4 +48,20 @@ export class NotificationService {
       text: `Hi ${input.buyerName},\n\nYour ${input.ticketType} ticket for ${input.eventName} is confirmed.\nSeat: ${input.seat}\n`,
     });
   }
+
+  /** #561 — notifies a waitlist user that they've been offered a purchase window. */
+  sendWaitlistOffer(input: {
+    to: string;
+    userName: string;
+    eventName: string;
+    ticketType: string;
+    expiresAt: Date;
+  }): Promise<void> {
+    const expiresFormatted = input.expiresAt.toLocaleString();
+    return this.provider.send({
+      to: input.to,
+      subject: `Ticket available: ${input.eventName}`,
+      text: `Hi ${input.userName},\n\nGood news! A ${input.ticketType} ticket for ${input.eventName} is now available for you to purchase.\n\nThis offer expires at ${expiresFormatted}. Don't miss out!\n`,
+    });
+  }
 }

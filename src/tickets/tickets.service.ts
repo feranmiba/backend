@@ -365,13 +365,21 @@ export class TicketsService {
       await this.promoCodes!.redeem(event.id, buyerId, promoCode, ticket.id);
     }
     if (this.notifications) {
-      await this.notifications.sendTicketReceipt({
-        to: buyer.email,
-        buyerName: buyer.name,
-        eventName: event.name,
-        ticketType: ticketType.name,
-        seat: seat ?? UNASSIGNED_SEAT,
-      });
+      // #541 — Fire and forget: an email error should not fail a purchase
+      // that already committed successfully. Log failures but return the ticket.
+      this.notifications
+        .sendTicketReceipt({
+          to: buyer.email,
+          buyerName: buyer.name,
+          eventName: event.name,
+          ticketType: ticketType.name,
+          seat: seat ?? UNASSIGNED_SEAT,
+        })
+        .catch((err) => {
+          this.logger.error(
+            `Failed to send ticket receipt to ${buyer.email} for ticket ${ticket.id}: ${err.message}`,
+          );
+        });
     }
     return ticket;
   }

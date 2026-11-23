@@ -2,16 +2,19 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { WaitlistEntryStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { OrganizationsService } from '../organizations/organizations.service';
+import { NotificationService } from '../notifications/notifications.service';
 
 @Injectable()
 export class WaitlistService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly organizations: OrganizationsService,
+    @Optional() private readonly notifications?: NotificationService,
   ) {}
 
   /**
@@ -126,6 +129,7 @@ export class WaitlistService {
       where: { ticketTypeId, status: WaitlistEntryStatus.WAITING },
       orderBy: { createdAt: 'asc' },
       take: count,
+      include: { user: true },
     });
 
     const now = new Date();
@@ -138,7 +142,32 @@ export class WaitlistService {
         offerExpiresAt,
       },
     });
-    return next.map((e) => ({ ...e, status: WaitlistEntryStatus.OFFERED }));
+
+    // #561 — Send email notifications to waitlist users who received offers
+    if (this.notifications) {
+      for (const entry of next) {
+        this.notifications
+          .sendWaitlistOffer({
+            to: entry.user.email,
+            userName: entry.user.name,
+            eventName: ticketType.event.name,
+            ticketType: ticketType.name,
+            expiresAt: offerExpiresAt,
+          })
+          .catch((err) => {
+            // Fire and forget: log failures but don't block the offer
+            console.error(
+              `Failed to send waitlist offer email to ${entry.user.email}: ${err.message}`,
+            );
+          });
+      }
+    }
+
+    return next.map((e) => ({
+      ...e,
+      status: WaitlistEntryStatus.OFFERED,
+      user: undefined,
+    }));
   }
 
   /** Marks an OFFERED entry CONVERTED once the offered user actually buys. */
