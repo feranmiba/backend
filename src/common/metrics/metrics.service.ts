@@ -13,9 +13,31 @@ interface RequestMetrics {
   buckets: number[];
 }
 
+/** One chain-indexer poll, as reported by `ChainEventIndexerJob` (#530). */
+export type IndexerRun =
+  { success: true; applied: number; lagLedgers: number } | { success: false };
+
 @Injectable()
 export class MetricsService {
   private readonly requests = new Map<string, RequestMetrics>();
+  private readonly indexer = {
+    successes: 0,
+    failures: 0,
+    eventsApplied: 0,
+    lagLedgers: null as number | null,
+    lastSuccessSeconds: null as number | null,
+  };
+
+  recordIndexerRun(run: IndexerRun, now: Date = new Date()): void {
+    if (!run.success) {
+      this.indexer.failures += 1;
+      return;
+    }
+    this.indexer.successes += 1;
+    this.indexer.eventsApplied += run.applied;
+    this.indexer.lagLedgers = run.lagLedgers;
+    this.indexer.lastSuccessSeconds = Math.floor(now.getTime() / 1000);
+  }
 
   recordRequest(
     method: string,
@@ -71,7 +93,41 @@ export class MetricsService {
       );
     }
 
+    lines.push(...this.renderIndexerMetrics());
+
     return `${lines.join('\n')}\n`;
+  }
+
+  private renderIndexerMetrics(): string[] {
+    const {
+      successes,
+      failures,
+      eventsApplied,
+      lagLedgers,
+      lastSuccessSeconds,
+    } = this.indexer;
+    const lines = [
+      '# HELP indexer_runs_total Chain event indexer polls, by result.',
+      '# TYPE indexer_runs_total counter',
+      `indexer_runs_total{result="success"} ${successes}`,
+      `indexer_runs_total{result="failure"} ${failures}`,
+      '# HELP indexer_events_applied_total Chain events the indexer applied to the database.',
+      '# TYPE indexer_events_applied_total counter',
+      `indexer_events_applied_total ${eventsApplied}`,
+    ];
+    // Gauges only appear after a successful poll, so a lag of 0 always means
+    // "caught up" and never "has not run".
+    if (lagLedgers !== null && lastSuccessSeconds !== null) {
+      lines.push(
+        '# HELP indexer_lag_ledgers Ledgers between the last indexed event and the RPC latest ledger.',
+        '# TYPE indexer_lag_ledgers gauge',
+        `indexer_lag_ledgers ${lagLedgers}`,
+        '# HELP indexer_last_success_timestamp_seconds Unix time of the last successful indexer poll.',
+        '# TYPE indexer_last_success_timestamp_seconds gauge',
+        `indexer_last_success_timestamp_seconds ${lastSuccessSeconds}`,
+      );
+    }
+    return lines;
   }
 
   private labels(metrics: RequestMetrics, le?: string): string {

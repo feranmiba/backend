@@ -52,6 +52,12 @@ export interface ChainTicketEvent {
   chainTicketId: bigint | null;
 }
 
+/** One `getEvents` page, with the RPC's latest ledger for lag tracking (#530). */
+export interface ChainTicketEventPage {
+  events: ChainTicketEvent[];
+  latestLedger: number;
+}
+
 /** The single ticketing-contract call carried by a signed envelope. */
 export interface SignedInvocation {
   functionName: string;
@@ -519,7 +525,7 @@ export class StellarService {
   async getTicketEvents(
     cursor: string | undefined,
     limit: number,
-  ): Promise<ChainTicketEvent[]> {
+  ): Promise<ChainTicketEventPage> {
     const start = cursor
       ? { cursor }
       : {
@@ -535,7 +541,10 @@ export class StellarService {
         limit,
       }),
     );
-    return response.events.map((event) => this.decodeTicketEvent(event));
+    return {
+      events: response.events.map((event) => this.decodeTicketEvent(event)),
+      latestLedger: response.latestLedger,
+    };
   }
 
   decodeSignedInvocation(signedXdr: string): SignedInvocation {

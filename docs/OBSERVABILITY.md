@@ -51,3 +51,28 @@ completes. If `METRICS_TOKEN` is unset, the endpoint returns 404.
 Generate a random token of at least 32 characters and keep it in the same
 secret-management system as other credentials. See
 [`docs/CONFIGURATION.md`](CONFIGURATION.md).
+
+### Chain indexer metrics
+
+When the chain event indexer runs (`FEATURE_INDEXER=true`; see
+[`docs/SCHEDULER.md`](SCHEDULER.md#chain-event-indexer)), `/metrics` also
+reports:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `indexer_runs_total{result="success"\|"failure"}` | counter | Polls, by outcome. |
+| `indexer_events_applied_total` | counter | Events that changed database state. Re-delivered events are not counted. |
+| `indexer_lag_ledgers` | gauge | Ledgers between the last indexed event and the RPC's latest ledger. 0 means the stream is drained. |
+| `indexer_last_success_timestamp_seconds` | gauge | Unix time of the last successful poll. |
+
+The two gauges appear only after the first successful poll, so a lag of 0
+never means "has not run". Suggested alerts:
+
+- `indexer_lag_ledgers > 120` for 10 minutes: the indexer is falling behind,
+  at about 5 s a ledger that is 10 minutes of events.
+- `time() - indexer_last_success_timestamp_seconds > 300`: no successful poll
+  in 5 minutes.
+- A rising `indexer_runs_total{result="failure"}`: RPC or database errors.
+  Check the `Chain event indexing failed` log lines.
+
+The counters are per process and reset on restart.

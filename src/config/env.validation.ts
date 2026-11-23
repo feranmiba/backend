@@ -258,6 +258,14 @@ class EnvironmentVariables {
   @IsOptional()
   TICKET_RECONCILIATION_INTERVAL_MINUTES?: number;
 
+  /// #530 — how often the chain event indexer polls `getEvents`, in seconds.
+  /// Only used when `FEATURE_INDEXER=true`. Defaults to 30.
+  @IsInt()
+  @Min(5)
+  @Max(3600)
+  @IsOptional()
+  INDEXER_POLL_INTERVAL_SECONDS?: number;
+
   /// How long a cached response for an Idempotency-Key stays valid, in
   /// minutes, before a repeated key is treated as a new request.
   @IsInt()

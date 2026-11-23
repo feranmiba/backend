@@ -9,6 +9,30 @@ export const TICKET_EVENTS_CURSOR = 'ticketing-events';
 /** Events fetched per poll. */
 export const INDEXER_PAGE_SIZE = 100;
 
+/** Outcome of one {@link ChainEventIndexer.indexOnce} poll. */
+export interface IndexerRunResult {
+  /** Events that changed state (re-delivered events are not counted). */
+  applied: number;
+  /** Events returned by the RPC for this page. */
+  fetched: number;
+  /** How many ledgers the cursor trails the RPC's latest ledger (#530). */
+  lagLedgers: number;
+}
+
+/**
+ * #530 — ledgers between the last event applied and the RPC's latest ledger.
+ * A short page means the stream is drained up to `latestLedger`, so the lag is
+ * zero; a full page means more events are waiting after its last one.
+ */
+export function indexerLagLedgers(
+  events: ChainTicketEvent[],
+  latestLedger: number,
+): number {
+  const last = events[events.length - 1];
+  if (!last || events.length < INDEXER_PAGE_SIZE) return 0;
+  return Math.max(0, latestLedger - last.ledger);
+}
+
 /**
  * Applies ticketing-contract events (`TicketIssued`, `TicketCheckedIn`) to the
  * cached ticket state, so the DB keeps up with the chain (#163).
@@ -27,12 +51,12 @@ export class ChainEventIndexer {
     private readonly stellar: StellarService,
   ) {}
 
-  /** Polls one page after the stored cursor. Returns how many events changed state. */
-  async indexOnce(): Promise<number> {
+  /** Polls one page after the stored cursor. */
+  async indexOnce(): Promise<IndexerRunResult> {
     const stored = await this.prisma.indexerCursor.findUnique({
       where: { name: TICKET_EVENTS_CURSOR },
     });
-    const events = await this.stellar.getTicketEvents(
+    const { events, latestLedger } = await this.stellar.getTicketEvents(
       stored?.cursor,
       INDEXER_PAGE_SIZE,
     );
@@ -43,7 +67,11 @@ export class ChainEventIndexer {
         applied++;
       }
     }
-    return applied;
+    return {
+      applied,
+      fetched: events.length,
+      lagLedgers: indexerLagLedgers(events, latestLedger),
+    };
   }
 
   /** Returns false when the event was already applied. */

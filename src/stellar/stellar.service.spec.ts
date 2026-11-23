@@ -643,6 +643,7 @@ describe('StellarService (contract-mock harness)', () => {
     it('uses the event id as the paging cursor, since getEvents has no pagingToken', async () => {
       const { service, server } = createStellarHarness();
       server.getEvents.mockResolvedValue({
+        latestLedger: 120,
         cursor: '0000000429496733696-0000000001',
         events: [
           {
@@ -654,7 +655,10 @@ describe('StellarService (contract-mock harness)', () => {
         ],
       });
 
-      const [event] = await service.getTicketEvents(undefined, 10);
+      const {
+        events: [event],
+        latestLedger,
+      } = await service.getTicketEvents(undefined, 10);
 
       expect(event).toEqual({
         id: '0000000429496733696-0000000001',
@@ -663,6 +667,7 @@ describe('StellarService (contract-mock harness)', () => {
         name: 'TicketCheckedIn',
         chainTicketId: CHAIN_TICKET_ID,
       });
+      expect(latestLedger).toBe(120);
       expect(server.getEvents).toHaveBeenCalledWith(
         expect.objectContaining({ startLedger: 500, limit: 10 }),
       );

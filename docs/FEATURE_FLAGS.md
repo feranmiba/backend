@@ -26,9 +26,12 @@ whose own fee already exceeds the cap is rejected before submission.
 
 ## `indexer` (chain event ingestion)
 
-When `FEATURE_INDEXER=true`, a cron job (every 30 seconds, when the scheduler
-is on) polls the ticketing contract's events with `getEvents` and applies
-`TicketCheckedIn` to the cached ticket status. The position is stored in
+When `FEATURE_INDEXER=true`, a scheduled job (every
+`INDEXER_POLL_INTERVAL_SECONDS`, default 30, when the scheduler is on) polls
+the ticketing contract's events with `getEvents` and applies `TicketCheckedIn`
+to the cached ticket status. The status cached is the ticket's on-chain status
+after the check-in, so a multi-use pass with entries left stays `VALID`. See
+[`docs/SCHEDULER.md`](SCHEDULER.md) for scheduling and metrics. The position is stored in
 `IndexerCursor`, and each applied event is recorded in `ProcessedChainEvent`,
 so re-delivered events are skipped. A first run starts from the latest ledger,
 so events emitted before the indexer was enabled are not backfilled.

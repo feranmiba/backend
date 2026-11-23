@@ -8,6 +8,7 @@ import {
   ChainEventIndexer,
   INDEXER_PAGE_SIZE,
   TICKET_EVENTS_CURSOR,
+  indexerLagLedgers,
 } from './chain-event-indexer.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type {
@@ -53,7 +54,9 @@ function setup() {
     $transaction: jest.fn((cb: (client: typeof tx) => unknown) => cb(tx)),
   };
   const stellar = {
-    getTicketEvents: jest.fn().mockResolvedValue(fixturePage),
+    getTicketEvents: jest
+      .fn()
+      .mockResolvedValue({ events: fixturePage, latestLedger: 110 }),
     verifyTicket: jest.fn().mockResolvedValue({ status: 'Used' }),
   };
   const indexer = new ChainEventIndexer(
@@ -96,9 +99,10 @@ describe('ChainEventIndexer', () => {
   it('applies every new event and reports how many changed state', async () => {
     const { indexer, tx } = setup();
 
-    const applied = await indexer.indexOnce();
+    const { applied, fetched } = await indexer.indexOnce();
 
     expect(applied).toBe(3);
+    expect(fetched).toBe(3);
     expect(tx.processedChainEvent.createMany).toHaveBeenCalledTimes(3);
   });
 
@@ -179,11 +183,43 @@ describe('ChainEventIndexer', () => {
     const { indexer, tx } = setup();
     tx.processedChainEvent.createMany.mockResolvedValue({ count: 0 });
 
-    const applied = await indexer.indexOnce();
+    const { applied } = await indexer.indexOnce();
 
     expect(applied).toBe(0);
     expect(tx.ticket.updateMany).not.toHaveBeenCalled();
     // The cursor still moves, so a re-delivered page does not stall the indexer.
     expect(tx.indexerCursor.upsert).toHaveBeenCalledTimes(3);
+  });
+
+  describe('lag (#530)', () => {
+    const page = (count: number, lastLedger: number): ChainTicketEvent[] =>
+      Array.from({ length: count }, (_, i) => ({
+        id: `evt-${i}`,
+        pagingToken: `evt-${i}`,
+        ledger: lastLedger - (count - 1 - i),
+        name: 'TicketIssued',
+        chainTicketId: BigInt(i),
+      }));
+
+    it('is zero when the page is short, because the stream is drained', () => {
+      expect(indexerLagLedgers(page(3, 100), 500)).toBe(0);
+      expect(indexerLagLedgers([], 500)).toBe(0);
+    });
+
+    it('is the ledger gap after a full page', () => {
+      expect(indexerLagLedgers(page(INDEXER_PAGE_SIZE, 400), 500)).toBe(100);
+    });
+
+    it('is reported by indexOnce', async () => {
+      const { indexer, stellar } = setup();
+      stellar.getTicketEvents.mockResolvedValue({
+        events: page(INDEXER_PAGE_SIZE, 1_000),
+        latestLedger: 1_250,
+      });
+
+      const { lagLedgers } = await indexer.indexOnce();
+
+      expect(lagLedgers).toBe(250);
+    });
   });
 });
