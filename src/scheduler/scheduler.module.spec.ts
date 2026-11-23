@@ -5,6 +5,8 @@ import { ConfigModule } from '@nestjs/config';
 import { HEARTBEAT_JOB_NAME, HeartbeatJob } from './heartbeat.job';
 import { SchedulerModule, isSchedulerEnabled } from './scheduler.module';
 import { TicketStatusReconciliationJob } from './ticket-status-reconciliation.job';
+import { EventReminderJob } from './event-reminder.job';
+import { DistributedLockService } from './distributed-lock.service';
 import { FeatureFlagsModule } from '../config/feature-flags.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { PrismaService } from '../prisma/prisma.service';
@@ -34,9 +36,11 @@ describe('SchedulerModule.forRoot', () => {
   it('registers the schedule module and the sample job by default', () => {
     const dynamicModule = SchedulerModule.forRoot({});
 
-    expect(dynamicModule.imports).toHaveLength(3);
+    expect(dynamicModule.imports).toHaveLength(4);
     expect(dynamicModule.providers).toContain(HeartbeatJob);
     expect(dynamicModule.providers).toContain(TicketStatusReconciliationJob);
+    expect(dynamicModule.providers).toContain(EventReminderJob);
+    expect(dynamicModule.providers).toContain(DistributedLockService);
   });
 
   it('registers nothing when SCHEDULER_ENABLED=false', () => {

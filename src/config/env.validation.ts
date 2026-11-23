@@ -269,6 +269,43 @@ class EnvironmentVariables {
   @IsInt()
   @IsOptional()
   FEE_BUMP_MAX_FEE_STROOPS?: number;
+
+  /// Outbound email notification provider: `log` (console logging) or `smtp` (real delivery). Defaults to `log` in development/test and `smtp` in production.
+  @IsIn(['log', 'smtp'])
+  @IsOptional()
+  EMAIL_PROVIDER?: string;
+
+  /// SMTP server hostname or IP address. Required when EMAIL_PROVIDER=smtp or in production.
+  @IsString()
+  @IsOptional()
+  SMTP_HOST?: string;
+
+  /// SMTP port (e.g. 587 for STARTTLS, 465 for TLS, or 25). Required when EMAIL_PROVIDER=smtp or in production.
+  @IsInt()
+  @Min(1)
+  @Max(65535)
+  @IsOptional()
+  SMTP_PORT?: number;
+
+  /// Username for SMTP authentication. Optional if the SMTP server does not require authentication.
+  @IsString()
+  @IsOptional()
+  SMTP_USER?: string;
+
+  /// Password for SMTP authentication. Required when SMTP_USER is set.
+  @IsString()
+  @IsOptional()
+  SMTP_PASSWORD?: string;
+
+  /// Default sender address for outbound emails (e.g. "StellarTickets <tickets@example.com>"). Required when EMAIL_PROVIDER=smtp or in production.
+  @IsString()
+  @IsOptional()
+  SMTP_FROM?: string;
+
+  /// Whether to enforce direct TLS for SMTP (true for port 465, false for 587/STARTTLS). Default false.
+  @IsIn(['true', 'false'])
+  @IsOptional()
+  SMTP_SECURE?: string;
 }
 
 function secretsProvider(env: EnvironmentVariables): string {
@@ -286,6 +323,28 @@ function crossFieldProblems(env: EnvironmentVariables): string[] {
   if (secretsProvider(env) === 'env' && env.JWT_SECRET !== undefined) {
     problems.push(...getJwtSecretProblems(env.JWT_SECRET, env.NODE_ENV));
   }
+
+  const effectiveEmailProvider =
+    env.EMAIL_PROVIDER ?? (env.NODE_ENV === 'production' ? 'smtp' : 'log');
+  if (effectiveEmailProvider === 'smtp') {
+    if (!env.SMTP_HOST) {
+      problems.push('SMTP_HOST is required when using SMTP email provider');
+    }
+    if (env.SMTP_PORT === undefined) {
+      problems.push('SMTP_PORT is required when using SMTP email provider');
+    }
+    if (!env.SMTP_FROM) {
+      problems.push('SMTP_FROM is required when using SMTP email provider');
+    }
+    if (env.SMTP_USER && !env.SMTP_PASSWORD) {
+      problems.push('SMTP_PASSWORD is required when SMTP_USER is configured');
+    }
+  } else if (env.NODE_ENV === 'production') {
+    problems.push(
+      'Real email provider (EMAIL_PROVIDER=smtp) with valid SMTP configuration is required in production',
+    );
+  }
+
   return problems;
 }
 

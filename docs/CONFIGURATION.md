@@ -91,6 +91,28 @@ missing, or fails the strength rules above, the app doesn't start. Rotating
 the secret requires a restart, and a restart invalidates tokens already
 issued.
 
+## Email Notification Provider
+
+Email notifications (email verification, purchase receipts, and event reminders)
+are delivered through the configured `EMAIL_PROVIDER`:
+
+| `EMAIL_PROVIDER` | Description | Required configuration |
+|---|---|---|
+| `log` | Logs email payload and recipient to console (development/test default) | None |
+| `smtp` | Delivers emails via standard SMTP / AWS SES SMTP interface | `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM` |
+
+In `production` (`NODE_ENV=production`), `EMAIL_PROVIDER` defaults to `smtp` and
+requires valid SMTP configuration. Silent fallback to `LogEmailProvider` is
+strictly rejected at startup.
+
+Supported SMTP variables:
+- `SMTP_HOST`: Hostname of SMTP server (e.g. `smtp.sendgrid.net` or `email-smtp.us-east-1.amazonaws.com`)
+- `SMTP_PORT`: Port (e.g. `587` for STARTTLS, `465` for direct TLS, or `25`)
+- `SMTP_USER`: Authentication username (optional if relay is unauthenticated)
+- `SMTP_PASSWORD`: Authentication password (required when `SMTP_USER` is set)
+- `SMTP_FROM`: Sender address (e.g. `"StellarTickets <tickets@example.com>"`)
+- `SMTP_SECURE`: `true` for direct TLS (port 465), `false` for STARTTLS (port 587)
+
 ## Environment variables
 
 <!-- BEGIN GENERATED: env table (npm run docs:env) -->
@@ -127,6 +149,7 @@ issued.
 | `METRICS_TOKEN` | string (min 32 chars) | optional | — | yes | Bearer token protecting the Prometheus metrics endpoint; unset disables it.
 | `STELLAR_NETWORK` | — | **required** | `testnet` | yes | Which Stellar network every contract call targets. Must match the network the `ticketing` contract is deployed on and the one user wallets are set
 | `TICKETING_CONTRACT_ID` | — | **required** | — | yes | Deployed `ticketing` contract's C... address.
+| `SOROBAN_RPC_TIMEOUT_MS` | integer | optional | `10000` \* | yes | Timeout, in milliseconds, for a single Soroban RPC call before it's treated as failed. Default 10000 (10s). See issue #145.
 | `PLATFORM_SIGNER_SECRET` | — | **required** | — | yes | Platform hot wallet used only as a disposable source account for read-only contract simulations (verify_ticket, get_event). It signs nothing and is never used for a write. See docs/NON_CUSTODIAL.md.
 | `OFFLINE_SIGNING_KEY_ID` | string | **required** | `2026-01` | yes | Key id of the Ed25519 key currently used to sign offline verification tokens. Must have a matching entry in OFFLINE_SIGNING_PUBLIC_KEYS.
 | `OFFLINE_SIGNING_PRIVATE_KEY` | string | **required** | — | yes | PEM-encoded Ed25519 private key used to sign offline verification tokens. See docs/OFFLINE_VERIFICATION.md for generation and rotation.
@@ -138,6 +161,13 @@ issued.
 | `TICKET_RECONCILIATION_INTERVAL_MINUTES` | integer | optional | `60` \* | yes | How often to compare cached ticket statuses with `verify_ticket`, in minutes. Defaults to 60.
 | `IDEMPOTENCY_KEY_TTL_MINUTES` | integer | optional | `15` | yes | How long a cached response for an Idempotency-Key stays valid, in minutes, before a repeated key is treated as a new request.
 | `FEE_BUMP_MAX_FEE_STROOPS` | integer | optional | `100000` \* | yes | Ceiling, in stroops, on the platform-paid fee for one sponsored attendee transaction when FEATURE_FEE_BUMP is on. Default 100000 (0.01 XLM).
+| `EMAIL_PROVIDER` | `log \| smtp` | optional | `log` | yes | Outbound email notification provider: `log` (console logging) or `smtp` (real delivery). Defaults to `log` in development/test and `smtp` in production.
+| `SMTP_HOST` | string | optional | `smtp.example.com` \* | yes | SMTP server hostname or IP address. Required when EMAIL_PROVIDER=smtp or in production.
+| `SMTP_PORT` | integer | optional | `587` \* | yes | SMTP port (e.g. 587 for STARTTLS, 465 for TLS, or 25). Required when EMAIL_PROVIDER=smtp or in production.
+| `SMTP_USER` | string | optional | — | yes | Username for SMTP authentication. Optional if the SMTP server does not require authentication.
+| `SMTP_PASSWORD` | string | optional | — | yes | Password for SMTP authentication. Required when SMTP_USER is set.
+| `SMTP_FROM` | string | optional | `tickets@example.com` \* | yes | Default sender address for outbound emails (e.g. "StellarTickets <tickets@example.com>"). Required when EMAIL_PROVIDER=smtp or in production.
+| `SMTP_SECURE` | `true \| false` | optional | `false` \* | yes | Whether to enforce direct TLS for SMTP (true for port 465, false for 587/STARTTLS). Default false.
 | `SCAN_RATE_LIMIT_MAX` | integer | optional | `10` | **no** | Scans allowed per window per device, for ticket check-in abuse prevention. See docs/RATE_LIMITING.md.
 | `SCAN_RATE_LIMIT_WINDOW_MS` | integer | optional | `60000` | **no** | Length of the scan rate-limit window, in milliseconds.
 | `FEATURE_FEE_BUMP` | boolean (string) | optional | `false` | **no** | Experimental: enable the fee-bump path. Off unless exactly 'true'. See docs/FEATURE_FLAGS.md.

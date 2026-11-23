@@ -1238,6 +1238,22 @@ describe('EventsService', () => {
         data: { deletedAt: null },
       });
     });
+
+    it('rejects restoration with 404 when the associated organization is soft-deleted (#566)', async () => {
+      prisma.event.findUnique.mockResolvedValue({
+        ...createEvent({ id: 'event-1', organizationId: 'org-1' }),
+        deletedAt: new Date('2026-09-26T00:00:00.000Z'),
+        organization: {
+          ...createOrganization({ stellarAccount: 'GORG' }),
+          deletedAt: new Date('2026-09-25T00:00:00.000Z'),
+        },
+      });
+
+      await expect(service.restore('organizer-1', 'event-1')).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(prisma.event.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('cache invalidation', () => {

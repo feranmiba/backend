@@ -446,7 +446,8 @@ export class EventsService {
       where: { id: eventId },
       include: { organization: true },
     });
-    if (!event) {
+    // #566 — soft-deleted events and events of soft-deleted orgs read as not-found.
+    if (!event || event.organization?.deletedAt) {
       throw new NotFoundException('Event not found');
     }
     await this.organizations.assertMember(event.organizationId, userId);
