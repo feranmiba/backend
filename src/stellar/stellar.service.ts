@@ -207,12 +207,18 @@ export class StellarService {
   /**
    * Poll/check status of a transaction by hash (Issue #149).
    */
-  async getTransactionStatus(txHash: string): Promise<{ status: string; latestLedger?: number; resultXdr?: string }> {
+  async getTransactionStatus(
+    txHash: string,
+  ): Promise<{ status: string; latestLedger?: number; resultXdr?: string }> {
     const tx = await this.rpcCall(() => this.server.getTransaction(txHash));
     return {
       status: tx.status,
       latestLedger: tx.latestLedger,
-      resultXdr: tx.resultXdr?.toXDR('base64'),
+      // Only a landed (SUCCESS / FAILED) transaction carries a result.
+      resultXdr:
+        tx.status === rpc.Api.GetTransactionStatus.NOT_FOUND
+          ? undefined
+          : tx.resultXdr.toXDR('base64'),
     };
   }
 
@@ -584,7 +590,9 @@ export class StellarService {
         .build();
 
       // Issue #153: Simulate transaction before returning build payload
-      const sim = await this.rpcCall(() => this.server.simulateTransaction(built));
+      const sim = await this.rpcCall(() =>
+        this.server.simulateTransaction(built),
+      );
       if (rpc.Api.isSimulationError(sim)) {
         throw mapSorobanErrorToApiException(sim.error);
       }
@@ -635,7 +643,10 @@ export class StellarService {
         : (payload as { ticket_id?: unknown } | null)?.ticket_id;
     return {
       id: event.id,
-      pagingToken: event.pagingToken,
+      // stellar-sdk 14+ dropped `pagingToken` from `getEvents` results; the
+      // event id is the RPC's pagination cursor. Reading the old field stored
+      // `undefined` as the indexer cursor, so the cursor upsert failed.
+      pagingToken: event.id,
       ledger: event.ledger,
       name,
       chainTicketId: typeof raw === 'bigint' ? raw : null,

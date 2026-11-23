@@ -13,6 +13,8 @@ export interface MockRpcServer {
   simulateTransaction: jest.Mock<Promise<unknown>, [Transaction]>;
   sendTransaction: jest.Mock<Promise<unknown>, [Transaction]>;
   getTransaction: jest.Mock<Promise<unknown>, [string]>;
+  getEvents: jest.Mock<Promise<unknown>, [unknown]>;
+  getLatestLedger: jest.Mock<Promise<{ sequence: number }>, []>;
 }
 
 /**
@@ -32,6 +34,8 @@ export function createMockRpcServer(
     simulateTransaction: jest.fn<Promise<unknown>, [Transaction]>(),
     sendTransaction: jest.fn<Promise<unknown>, [Transaction]>(),
     getTransaction: jest.fn<Promise<unknown>, [string]>(),
+    getEvents: jest.fn<Promise<unknown>, [unknown]>(),
+    getLatestLedger: jest.fn(() => Promise.resolve({ sequence: 500 })),
     ...overrides,
   };
 }

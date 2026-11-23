@@ -639,6 +639,36 @@ describe('StellarService (contract-mock harness)', () => {
     });
   });
 
+  describe('getTicketEvents', () => {
+    it('uses the event id as the paging cursor, since getEvents has no pagingToken', async () => {
+      const { service, server } = createStellarHarness();
+      server.getEvents.mockResolvedValue({
+        cursor: '0000000429496733696-0000000001',
+        events: [
+          {
+            id: '0000000429496733696-0000000001',
+            ledger: 100,
+            topic: [nativeToScVal('TicketCheckedIn', { type: 'symbol' })],
+            value: nativeToScVal(CHAIN_TICKET_ID, { type: 'u64' }),
+          },
+        ],
+      });
+
+      const [event] = await service.getTicketEvents(undefined, 10);
+
+      expect(event).toEqual({
+        id: '0000000429496733696-0000000001',
+        pagingToken: '0000000429496733696-0000000001',
+        ledger: 100,
+        name: 'TicketCheckedIn',
+        chainTicketId: CHAIN_TICKET_ID,
+      });
+      expect(server.getEvents).toHaveBeenCalledWith(
+        expect.objectContaining({ startLedger: 500, limit: 10 }),
+      );
+    });
+  });
+
   describe('read-only simulations', () => {
     it('verifyTicket simulates from the platform signer and decodes the Ticket struct', async () => {
       const { service, server, platformSigner } = createStellarHarness();
@@ -845,7 +875,9 @@ describe('StellarService (contract-mock harness)', () => {
       });
       server.simulateTransaction
         .mockRejectedValueOnce(Object.assign(new Error('ECONNRESET')))
-        .mockRejectedValueOnce(Object.assign(new Error('5xx'), { response: { status: 503 } }))
+        .mockRejectedValueOnce(
+          Object.assign(new Error('5xx'), { response: { status: 503 } }),
+        )
         .mockResolvedValueOnce(simulationSuccess(event));
 
       const pending = service.getEvent(CHAIN_EVENT_ID);
@@ -861,7 +893,9 @@ describe('StellarService (contract-mock harness)', () => {
         Object.assign(new Error('bad request'), { response: { status: 400 } }),
       );
 
-      await expect(service.getEvent(CHAIN_EVENT_ID)).rejects.toThrow('bad request');
+      await expect(service.getEvent(CHAIN_EVENT_ID)).rejects.toThrow(
+        'bad request',
+      );
       expect(server.simulateTransaction).toHaveBeenCalledTimes(1);
     });
   });
