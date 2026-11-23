@@ -16,6 +16,8 @@
 - [CACHING.md](CACHING.md) — HTTP cache headers and the memory/Redis application cache
 - [WEBHOOKS.md](WEBHOOKS.md) — optional BullMQ queue for outbound webhooks
 - [SCHEDULER.md](SCHEDULER.md) — cron jobs and the `SCHEDULER_ENABLED` switch
+- [RESALE_EXPIRY.md](RESALE_EXPIRY.md) — resale listing expiry, the listing cap, price history and its limitations
+- [../ROADMAP.md](../ROADMAP.md) — status of planned and shipped features
 - [CORS.md](CORS.md) — allowed origins
 - [CONFIGURATION.md](CONFIGURATION.md) — environment variables
 - [PRISMA_7_NOTE.md](PRISMA_7_NOTE.md) — why Prisma is pinned to 6.x
