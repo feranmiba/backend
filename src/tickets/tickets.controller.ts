@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -35,13 +36,26 @@ import { MyTicketsQueryDto } from './dto/my-tickets-query.dto';
 import { RevokeBatchDto } from './dto/revoke-batch.dto';
 import { IssueBatchDto } from './dto/issue-batch.dto';
 
-/** Parses a route param into the BigInt `chainTicketId`, treating a malformed value as "not found". */
+/** Largest on-chain ticket id: the contract stores ids as u64. */
+const MAX_CHAIN_TICKET_ID = 2n ** 64n - 1n;
+
+/**
+ * Parses a route param into the BigInt `chainTicketId`. A malformed value is
+ * "not found"; a well-formed but negative or >= 2^64 value is a bad request.
+ */
 function parseChainTicketId(raw: string): bigint {
+  let id: bigint;
   try {
-    return BigInt(raw);
+    id = BigInt(raw);
   } catch {
     throw new NotFoundException('Ticket not found');
   }
+  if (id < 0n || id > MAX_CHAIN_TICKET_ID) {
+    throw new BadRequestException(
+      'chainTicketId must be between 0 and 2^64 - 1',
+    );
+  }
+  return id;
 }
 
 @Controller('tickets')

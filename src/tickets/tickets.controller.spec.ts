@@ -235,6 +235,29 @@ describe('TicketsController', () => {
       expect(service.findByChainTicketId).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['negative', '-1'],
+      ['at 2^64', '18446744073709551616'],
+    ])(
+      'GET /by-chain/:id returns 400 for a %s id without calling the service',
+      async (_label, id) => {
+        await http().get(`/tickets/by-chain/${id}`).set(AUTH).expect(400);
+        expect(service.findByChainTicketId).not.toHaveBeenCalled();
+      },
+    );
+
+    it('GET /by-chain/:id accepts the largest u64 id', async () => {
+      service.findByChainTicketId.mockResolvedValue({ id: 't' });
+      await http()
+        .get('/tickets/by-chain/18446744073709551615')
+        .set(AUTH)
+        .expect(200);
+      expect(service.findByChainTicketId).toHaveBeenCalledWith(
+        uid,
+        18446744073709551615n,
+      );
+    });
+
     it('GET /:ticketId returns the ticket for the caller (#121)', async () => {
       service.findOne.mockResolvedValue({ id: 't1' });
       const res = await http().get('/tickets/t1').set(AUTH).expect(200);

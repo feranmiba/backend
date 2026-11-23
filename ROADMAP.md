@@ -5,5 +5,5 @@
 - [x] Resale marketplace
 - [ ] Rate limiting on auth endpoints
 - [x] Webhook notifications for organizers
-- [ ] Batch ticket issuance endpoint
-- [ ] On-chain event indexer for faster marketplace queries
+- [x] Batch ticket issuance endpoint (`POST /tickets/issue-batch`)
+- [x] On-chain event indexer for faster marketplace queries (`src/indexer`)
