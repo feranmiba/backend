@@ -14,6 +14,7 @@ import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 
 const VALID_KEY = 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN7';
+const SIGNATURE = 'c2lnbmF0dXJl';
 
 describe('UsersController', () => {
   let app: INestApplication;
@@ -21,6 +22,7 @@ describe('UsersController', () => {
     findMe: jest.fn(),
     updateProfile: jest.fn(),
     connectWallet: jest.fn(),
+    createStellarChallenge: jest.fn(),
     lookupByEmail: jest.fn(),
   };
 
@@ -98,11 +100,12 @@ describe('UsersController', () => {
     await request(server(app))
       .patch('/users/me/wallet')
       .set(AUTH)
-      .send({ stellarPublicKey: VALID_KEY })
+      .send({ stellarPublicKey: VALID_KEY, signature: SIGNATURE })
       .expect(200);
     expect(service.connectWallet).toHaveBeenCalledWith(
       TEST_USER.userId,
       VALID_KEY,
+      SIGNATURE,
     );
   });
 
@@ -110,6 +113,7 @@ describe('UsersController', () => {
     ['an invalid key', { stellarPublicKey: 'not-a-key' }],
     ['a missing key', {}],
     ['an unknown field', { stellarPublicKey: VALID_KEY, extra: 1 }],
+    ['a missing signature', { stellarPublicKey: VALID_KEY }],
   ])('PATCH /me/wallet rejects %s', async (_label, body) => {
     await request(server(app))
       .patch('/users/me/wallet')
@@ -119,6 +123,28 @@ describe('UsersController', () => {
     expect(service.connectWallet).not.toHaveBeenCalled();
   });
 
+  it('POST /me/stellar-challenge issues a challenge for the signed-in user (#596)', async () => {
+    service.createStellarChallenge.mockResolvedValue({ message: 'm' });
+    await request(server(app))
+      .post('/users/me/stellar-challenge')
+      .set(AUTH)
+      .send({ stellarPublicKey: VALID_KEY, purpose: 'wallet-connect' })
+      .expect(201);
+    expect(service.createStellarChallenge).toHaveBeenCalledWith(
+      TEST_USER.userId,
+      { stellarPublicKey: VALID_KEY, purpose: 'wallet-connect' },
+    );
+  });
+
+  it('POST /me/stellar-challenge rejects an unknown purpose', async () => {
+    await request(server(app))
+      .post('/users/me/stellar-challenge')
+      .set(AUTH)
+      .send({ stellarPublicKey: VALID_KEY, purpose: 'something-else' })
+      .expect(400);
+    expect(service.createStellarChallenge).not.toHaveBeenCalled();
+  });
+
   it('PATCH /me/wallet propagates a wallet conflict', async () => {
     service.connectWallet.mockRejectedValue(
       new ConflictException('Wallet already linked'),
@@ -126,7 +152,7 @@ describe('UsersController', () => {
     const res = await request(server(app))
       .patch('/users/me/wallet')
       .set(AUTH)
-      .send({ stellarPublicKey: VALID_KEY })
+      .send({ stellarPublicKey: VALID_KEY, signature: SIGNATURE })
       .expect(409);
     expect((res.body as { message: string }).message).toBe(
       'Wallet already linked',

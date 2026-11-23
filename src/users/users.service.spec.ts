@@ -1,7 +1,21 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { UsersService } from './users.service';
 import type { PrismaService } from '../prisma/prisma.service';
+import { consumeStellarProof } from '../common/stellar-proof';
+
+// #596 — the cryptographic check is covered in stellar-proof.spec.ts; here we
+// only assert that connectWallet requires it before writing.
+jest.mock('../common/stellar-proof', () => ({
+  ...jest.requireActual<typeof import('../common/stellar-proof')>(
+    '../common/stellar-proof',
+  ),
+  consumeStellarProof: jest.fn(),
+}));
 
 describe('UsersService', () => {
   let service: UsersService;
@@ -47,7 +61,7 @@ describe('UsersService', () => {
       prisma.ticket.count.mockResolvedValue(1);
 
       await expect(
-        service.connectWallet('user-1', 'GNEW'),
+        service.connectWallet('user-1', 'GNEW', 'sig'),
       ).rejects.toMatchObject({ status: 409 });
       expect(prisma.user.update).not.toHaveBeenCalled();
     });
@@ -59,7 +73,9 @@ describe('UsersService', () => {
         stellarPublicKey: 'GNEW',
       });
 
-      await expect(service.connectWallet('user-1', 'GNEW')).resolves.toEqual({
+      await expect(
+        service.connectWallet('user-1', 'GNEW', 'sig'),
+      ).resolves.toEqual({
         id: 'user-1',
         stellarPublicKey: 'GNEW',
       });
@@ -74,7 +90,7 @@ describe('UsersService', () => {
       );
 
       await expect(
-        service.connectWallet('user-1', 'GABC'),
+        service.connectWallet('user-1', 'GABC', 'sig'),
       ).rejects.toBeInstanceOf(ConflictException);
     });
 
@@ -87,7 +103,7 @@ describe('UsersService', () => {
       );
 
       try {
-        await service.connectWallet('user-1', 'GABC');
+        await service.connectWallet('user-1', 'GABC', 'sig');
         throw new Error('expected connectWallet to reject');
       } catch (err) {
         expect(err).toBeInstanceOf(ConflictException);
@@ -102,9 +118,40 @@ describe('UsersService', () => {
     it('rethrows unrelated errors', async () => {
       prisma.user.update.mockRejectedValue(new Error('connection lost'));
 
-      await expect(service.connectWallet('user-1', 'GABC')).rejects.toThrow(
-        'connection lost',
+      await expect(
+        service.connectWallet('user-1', 'GABC', 'sig'),
+      ).rejects.toThrow('connection lost');
+    });
+
+    it('verifies the signed challenge for this user and key before writing (#596)', async () => {
+      prisma.user.update.mockResolvedValue({
+        id: 'user-1',
+        stellarPublicKey: 'GNEW',
+      });
+
+      await service.connectWallet('user-1', 'GNEW', 'sig-base64');
+
+      expect(consumeStellarProof).toHaveBeenCalledWith(
+        prisma,
+        'user-1',
+        'wallet-connect',
+        'GNEW',
+        'sig-base64',
       );
+      expect(
+        (consumeStellarProof as jest.Mock).mock.invocationCallOrder[0],
+      ).toBeLessThan(prisma.user.update.mock.invocationCallOrder[0]);
+    });
+
+    it('does not link the wallet when the proof is rejected (#596)', async () => {
+      (consumeStellarProof as jest.Mock).mockRejectedValueOnce(
+        new BadRequestException('bad proof'),
+      );
+
+      await expect(
+        service.connectWallet('user-1', 'GNEW', 'forged'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.user.update).not.toHaveBeenCalled();
     });
   });
 

@@ -1,0 +1,15 @@
+meta {
+  name: Verify Email
+  type: http
+}
+
+post {
+  url: {{baseUrl}}/v1/auth/verify-email
+  body: json
+}
+
+body:json {
+  {
+    "token": "string"
+  }
+}

@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   NotFoundException,
@@ -6,6 +7,16 @@ import {
 import { OrganizationsService } from './organizations.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import { createOrganization } from '../../test/factories';
+import { consumeStellarProof } from '../common/stellar-proof';
+
+// #595 — the signature check itself is covered in stellar-proof.spec.ts; here
+// we assert the service demands and checks a proof before writing.
+jest.mock('../common/stellar-proof', () => ({
+  ...jest.requireActual<typeof import('../common/stellar-proof')>(
+    '../common/stellar-proof',
+  ),
+  consumeStellarProof: jest.fn().mockResolvedValue(undefined),
+}));
 
 describe('OrganizationsService', () => {
   let service: OrganizationsService;
@@ -155,6 +166,102 @@ describe('OrganizationsService', () => {
       // transaction has failed, and the caller must never see the org that
       // $transaction's rejection means was rolled back.
       expect(prisma.user.updateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('stellarAccount proof (#595)', () => {
+    const account = 'G'.repeat(56);
+
+    beforeEach(() => {
+      (consumeStellarProof as jest.Mock).mockClear();
+    });
+
+    it('verifies the organizer signed for this account before creating the org', async () => {
+      prisma.organization.findUnique.mockResolvedValue(null);
+      prisma.organization.create.mockResolvedValue(createOrganization());
+
+      await service.create('user-1', {
+        ...createOrganization({
+          name: 'Proven Org',
+          slug: 'proven-org',
+          stellarAccount: account,
+        }),
+        stellarAccountSignature: 'sig-b64',
+      } as never);
+
+      expect(consumeStellarProof).toHaveBeenCalledWith(
+        prisma,
+        'user-1',
+        'organization-account',
+        account,
+        'sig-b64',
+      );
+    });
+
+    it('creates nothing when the proof is rejected', async () => {
+      prisma.organization.findUnique.mockResolvedValue(null);
+      (consumeStellarProof as jest.Mock).mockRejectedValueOnce(
+        new BadRequestException('bad proof'),
+      );
+
+      await expect(
+        service.create('user-1', {
+          ...createOrganization({
+            name: 'Hijacked Org',
+            slug: 'hijacked-org',
+            stellarAccount: account,
+          }),
+          stellarAccountSignature: 'forged',
+        } as never),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.organization.create).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('requires a signature when an update changes stellarAccount', async () => {
+      prisma.organization.findUnique.mockResolvedValue(
+        createOrganization({ id: 'org-1', deletedAt: null }),
+      );
+      prisma.organizationMember.findUnique.mockResolvedValue({ role: 'OWNER' });
+
+      await expect(
+        service.update('user-1', 'org-1', { stellarAccount: account }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.organization.update).not.toHaveBeenCalled();
+    });
+
+    it('verifies the new account when an update changes stellarAccount', async () => {
+      prisma.organization.findUnique.mockResolvedValue(
+        createOrganization({ id: 'org-1', deletedAt: null }),
+      );
+      prisma.organizationMember.findUnique.mockResolvedValue({ role: 'OWNER' });
+      prisma.organization.update.mockResolvedValue({ id: 'org-1' });
+
+      await service.update('user-1', 'org-1', {
+        stellarAccount: account,
+        stellarAccountSignature: 'sig-b64',
+      });
+
+      expect(consumeStellarProof).toHaveBeenCalledWith(
+        prisma,
+        'user-1',
+        'organization-account',
+        account,
+        'sig-b64',
+      );
+      expect(prisma.organization.update).toHaveBeenCalled();
+    });
+
+    it('does not ask for a proof when stellarAccount is not part of the update', async () => {
+      prisma.organization.findUnique.mockResolvedValue(
+        createOrganization({ id: 'org-1', deletedAt: null }),
+      );
+      prisma.organizationMember.findUnique.mockResolvedValue({ role: 'OWNER' });
+      prisma.organization.update.mockResolvedValue({ id: 'org-1' });
+
+      await service.update('user-1', 'org-1', { name: 'Renamed Org' });
+
+      expect(consumeStellarProof).not.toHaveBeenCalled();
     });
   });
 
