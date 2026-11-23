@@ -54,6 +54,7 @@ function setup() {
   };
   const stellar = {
     getTicketEvents: jest.fn().mockResolvedValue(fixturePage),
+    verifyTicket: jest.fn().mockResolvedValue({ status: 'Used' }),
   };
   const indexer = new ChainEventIndexer(
     prisma as unknown as PrismaService,
@@ -110,6 +111,55 @@ describe('ChainEventIndexer', () => {
     expect(tx.ticket.updateMany).toHaveBeenCalledWith({
       where: { chainTicketId: 7n },
       data: { status: 'USED' },
+    });
+  });
+
+  describe('multi-use passes (#529)', () => {
+    it('keeps a pass VALID when the chain says it has entries left', async () => {
+      const { indexer, stellar, tx } = setup();
+      stellar.verifyTicket.mockResolvedValue({ status: 'Valid' });
+
+      await indexer.indexOnce();
+
+      expect(stellar.verifyTicket).toHaveBeenCalledWith(7n);
+      expect(tx.ticket.updateMany).toHaveBeenCalledWith({
+        where: { chainTicketId: 7n },
+        data: { status: 'VALID' },
+      });
+    });
+
+    it('marks a pass USED once the chain reports its last entry consumed', async () => {
+      const { indexer, stellar, tx } = setup();
+      stellar.verifyTicket.mockResolvedValue({ status: 'Used' });
+
+      await indexer.indexOnce();
+
+      expect(tx.ticket.updateMany).toHaveBeenCalledWith({
+        where: { chainTicketId: 7n },
+        data: { status: 'USED' },
+      });
+    });
+
+    it('only reads the chain for check-ins that carry a ticket id', async () => {
+      const { indexer, stellar } = setup();
+
+      await indexer.indexOnce();
+
+      expect(stellar.verifyTicket).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves the event unapplied and the cursor in place when the read fails', async () => {
+      const { indexer, stellar, tx } = setup();
+      stellar.verifyTicket.mockRejectedValue(new Error('RPC unavailable'));
+
+      await expect(indexer.indexOnce()).rejects.toThrow('RPC unavailable');
+
+      // Only the TicketIssued event before the check-in committed.
+      expect(tx.processedChainEvent.createMany).toHaveBeenCalledTimes(1);
+      expect(tx.indexerCursor.upsert).toHaveBeenLastCalledWith(
+        expect.objectContaining({ update: { cursor: 'pt-1' } }),
+      );
+      expect(tx.ticket.updateMany).not.toHaveBeenCalled();
     });
   });
 

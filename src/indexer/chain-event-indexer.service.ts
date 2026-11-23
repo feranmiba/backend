@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { TicketStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChainTicketEvent, StellarService } from '../stellar/stellar.service';
+import { CHAIN_STATUS_TO_DB_STATUS } from '../stellar/ticket-status';
 
 /** Name of the `IndexerCursor` row this indexer advances. */
 export const TICKET_EVENTS_CURSOR = 'ticketing-events';
@@ -47,7 +47,20 @@ export class ChainEventIndexer {
   }
 
   /** Returns false when the event was already applied. */
-  private apply(event: ChainTicketEvent): Promise<boolean> {
+  private async apply(event: ChainTicketEvent): Promise<boolean> {
+    // #529 — a check-in only uses a ticket up once its entries are exhausted:
+    // a multi-use pass stays `Valid` on chain until its last entry, and
+    // `pass_out` can hand one back. So the status to cache comes from the
+    // contract, not from the event name. The read happens before the DB
+    // transaction; if it fails, nothing commits and the cursor stays put, so
+    // the next poll retries this event.
+    const checkedInStatus =
+      event.name === 'TicketCheckedIn' && event.chainTicketId !== null
+        ? CHAIN_STATUS_TO_DB_STATUS[
+            (await this.stellar.verifyTicket(event.chainTicketId)).status
+          ]
+        : null;
+
     return this.prisma.$transaction(async (tx) => {
       // `skipDuplicates` turns a repeat into `ON CONFLICT DO NOTHING`, so the
       // transaction stays usable. A caught unique-violation would abort it.
@@ -57,10 +70,10 @@ export class ChainEventIndexer {
       });
       const isNew = count > 0;
 
-      if (isNew && event.name === 'TicketCheckedIn' && event.chainTicketId !== null) {
+      if (isNew && checkedInStatus !== null && event.chainTicketId !== null) {
         await tx.ticket.updateMany({
           where: { chainTicketId: event.chainTicketId },
-          data: { status: TicketStatus.USED },
+          data: { status: checkedInStatus },
         });
       }
 
