@@ -1448,7 +1448,8 @@ curl -s "$API/v1/tickets/resale?limit=20" -H "Authorization: Bearer $TOKEN"
       },
       "seller": { "name": "Ada Lovelace" },
       "royaltyFee": "137500",
-      "sellerProceeds": "2612500"
+      "platformFee": "68750",
+      "sellerProceeds": "2543750"
     }
   ],
   "nextCursor": "MjAyNi0wOS0yN1QxMzowMDowMC4wMDBafDFlM2M1YTdiLTlkMGYtNGIyYy04ZTRhLTZmN2E4YjljMGQxZg",
@@ -1456,9 +1457,20 @@ curl -s "$API/v1/tickets/resale?limit=20" -H "Authorization: Bearer $TOKEN"
 }
 ```
 
-`royaltyFee = floor(price * royaltyBps / 10000)` and
-`sellerProceeds = price - royaltyFee`. `nextCursor` is `null` on the
-last page; a malformed cursor is a `400`.
+The split mirrors the contract's `resale_split`, which `buy_resale` settles
+with:
+
+- `royaltyFee = floor(price * royaltyBps / 10000)`;
+- `platformFee = floor(price * resaleFeeBps / 10000)`, where `resaleFeeBps` is
+  the contract's `platform_fee().resale_bps` (0 when no fee is set; cached for
+  a minute);
+- `sellerProceeds = price - royaltyFee - platformFee`, what the seller
+  actually receives.
+
+If the fee cannot be read from the chain and no earlier value is cached,
+`platformFee` and `sellerProceeds` are `null` rather than an overstated
+figure. `nextCursor` is `null` on the last page; a malformed cursor is a
+`400`.
 
 #### `GET /v1/tickets/resale/:listingId/price-history`
 

@@ -144,6 +144,7 @@ describe('TicketsService', () => {
       verifyTicket: jest.fn(),
       decodeSignedInvocation: jest.fn(),
       txHashOf: jest.fn().mockReturnValue('hash-1'),
+      getResaleFeeBps: jest.fn().mockResolvedValue(0),
     };
     offlineTokens = {
       sign: jest.fn().mockReturnValue({
@@ -959,7 +960,10 @@ describe('TicketsService', () => {
         chainTicketId: 7n,
         status: 'VALID',
         chainTicketId: 7n,
-        event: { organizationId: 'org-1', organization: { stellarAccount: 'GORG' } },
+        event: {
+          organizationId: 'org-1',
+          organization: { stellarAccount: 'GORG' },
+        },
       });
 
       const token = await service.getOfflineToken('staff-1', 'ticket-1');
@@ -995,7 +999,10 @@ describe('TicketsService', () => {
         chainTicketId: 7n,
         status: 'VALID',
         chainTicketId: 7n,
-        event: { organizationId: 'org-1', organization: { stellarAccount: 'GORG' } },
+        event: {
+          organizationId: 'org-1',
+          organization: { stellarAccount: 'GORG' },
+        },
       });
       organizations.assertMember.mockRejectedValueOnce(
         new ForbiddenException('You are not a member of this organization'),
@@ -1812,6 +1819,71 @@ describe('TicketsService', () => {
     });
   });
 
+  describe('findActiveResaleListings — platform resale fee (#520)', () => {
+    const listing = {
+      id: 'listing-1',
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      price: 10_000n,
+      ticket: {
+        event: { royaltyBps: 500 },
+        ticketType: { price: 1_000n },
+      },
+      seller: { name: 'Alice' },
+    };
+
+    it('deducts the configured resale fee, matching the contract split', async () => {
+      stellar.getResaleFeeBps.mockResolvedValue(250);
+      prisma.resaleListing.findMany.mockResolvedValue([listing]);
+
+      const page = await service.findActiveResaleListings(undefined, 10);
+
+      // royalty = floor(10_000 * 500 / 10_000) = 500
+      // fee     = floor(10_000 * 250 / 10_000) = 250
+      // seller  = 10_000 - 500 - 250          = 9_250
+      expect(page.items[0]).toMatchObject({
+        royaltyFee: 500n,
+        platformFee: 250n,
+        sellerProceeds: 9_250n,
+      });
+    });
+
+    it('rounds each part down and gives the seller the remainder', () => {
+      // 999 * 333 / 10_000 = 33.2 -> 33; 999 * 125 / 10_000 = 12.4 -> 12
+      expect(TicketsService.computeResaleSplit(999n, 333, 125)).toEqual({
+        royaltyFee: 33n,
+        platformFee: 12n,
+        sellerProceeds: 954n,
+      });
+    });
+
+    it('reads the fee once per page, and not at all for an empty page', async () => {
+      prisma.resaleListing.findMany.mockResolvedValue([
+        listing,
+        { ...listing, id: 'listing-2' },
+      ]);
+      await service.findActiveResaleListings(undefined, 10);
+      expect(stellar.getResaleFeeBps).toHaveBeenCalledTimes(1);
+
+      stellar.getResaleFeeBps.mockClear();
+      prisma.resaleListing.findMany.mockResolvedValue([]);
+      await service.findActiveResaleListings(undefined, 10);
+      expect(stellar.getResaleFeeBps).not.toHaveBeenCalled();
+    });
+
+    it('omits proceeds rather than overstating them when the fee cannot be read', async () => {
+      stellar.getResaleFeeBps.mockRejectedValue(new Error('RPC unavailable'));
+      prisma.resaleListing.findMany.mockResolvedValue([listing]);
+
+      const page = await service.findActiveResaleListings(undefined, 10);
+
+      expect(page.items[0]).toMatchObject({
+        royaltyFee: 500n,
+        platformFee: null,
+        sellerProceeds: null,
+      });
+    });
+  });
+
   // ---- #319 Resale price cap validation ----
 
   describe('computeResalePriceCap (#319)', () => {
@@ -2227,7 +2299,10 @@ describe('TicketsService', () => {
         eventId: 'event-1',
         ownerId: 'owner-1',
         chainTicketId: 7n,
-        event: { organizationId: 'org-1', organization: { stellarAccount: 'GORG' } },
+        event: {
+          organizationId: 'org-1',
+          organization: { stellarAccount: 'GORG' },
+        },
       });
 
       await expect(
@@ -2244,7 +2319,10 @@ describe('TicketsService', () => {
         eventId: 'event-1',
         ownerId: 'owner-1',
         chainTicketId: 7n,
-        event: { organizationId: 'org-1', organization: { stellarAccount: 'GORG' } },
+        event: {
+          organizationId: 'org-1',
+          organization: { stellarAccount: 'GORG' },
+        },
       });
 
       await expect(
@@ -2296,7 +2374,10 @@ describe('TicketsService', () => {
       eventId: 'event-1',
       ownerId: 'owner-1',
       chainTicketId: 7n,
-      event: { organizationId: 'org-1', organization: { stellarAccount: 'GORG' } },
+      event: {
+        organizationId: 'org-1',
+        organization: { stellarAccount: 'GORG' },
+      },
     };
 
     it('returns the stored response without re-submitting or re-writing', async () => {
@@ -2308,7 +2389,11 @@ describe('TicketsService', () => {
       });
       prisma.ticket.findUnique.mockResolvedValue(ticketRow);
 
-      const result = await service.confirmCheckIn('user-1', 'ticket-1', 'signed-xdr');
+      const result = await service.confirmCheckIn(
+        'user-1',
+        'ticket-1',
+        'signed-xdr',
+      );
 
       expect(result).toEqual(stored);
       expect(prisma.processedTx.findUnique).toHaveBeenCalledWith({
@@ -2346,7 +2431,10 @@ describe('TicketsService', () => {
         eventId: 'event-1',
         ownerId: 'owner-1',
         chainTicketId: 7n,
-        event: { organizationId: 'org-1', organization: { stellarAccount: 'GORG' } },
+        event: {
+          organizationId: 'org-1',
+          organization: { stellarAccount: 'GORG' },
+        },
       });
       prisma.ticket.update.mockResolvedValue({
         id: 'ticket-1',
@@ -2376,7 +2464,10 @@ describe('TicketsService', () => {
         eventId: 'event-1',
         ownerId: 'owner-1',
         chainTicketId: 7n,
-        event: { organizationId: 'org-1', organization: { stellarAccount: 'GORG' } },
+        event: {
+          organizationId: 'org-1',
+          organization: { stellarAccount: 'GORG' },
+        },
       });
       prisma.ticket.update.mockResolvedValue({
         id: 'ticket-1',

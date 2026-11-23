@@ -187,8 +187,7 @@ export class TicketsService {
     ticketTypeId: string,
     recipients: Array<{ toUserId: string; toPublicKey: string; seat?: string }>,
   ) {
-    const maxBatchSize =
-      this.config?.get<number>('ISSUE_BATCH_MAX_SIZE') ?? 50;
+    const maxBatchSize = this.config?.get<number>('ISSUE_BATCH_MAX_SIZE') ?? 50;
     if (recipients.length > maxBatchSize) {
       throw new BadRequestException(
         `Batch size exceeds the maximum of ${maxBatchSize} recipients`,
@@ -326,8 +325,10 @@ export class TicketsService {
     ]);
     // #211 — fail fast on duplicate assigned seats before touching the chain.
     await this.assertSeatAvailable(event.id, seat);
-    const { result, txHash } =
-      await this.stellar.submitSignedTransaction(signedXdr, this.attendeeSubmitOptions());
+    const { result, txHash } = await this.stellar.submitSignedTransaction(
+      signedXdr,
+      this.attendeeSubmitOptions(),
+    );
     const chainTicketId = result as bigint;
 
     let ticket;
@@ -415,7 +416,10 @@ export class TicketsService {
       ['ticket', 1, ticket.chainTicketId],
       ['recipient', 2, toUser.stellarPublicKey],
     ]);
-    await this.stellar.submitSignedTransaction(signedXdr, this.attendeeSubmitOptions());
+    await this.stellar.submitSignedTransaction(
+      signedXdr,
+      this.attendeeSubmitOptions(),
+    );
 
     // #375 — the chain is the source of truth for ownership: only record
     // toUserId once the on-chain owner is confirmed to be their wallet.
@@ -720,6 +724,25 @@ export class TicketsService {
     return (originalPrice * BigInt(maxResaleMultiplierBps)) / 10_000n;
   }
 
+  /**
+   * #520 — mirrors the contract's `resale_split`: the royalty and the platform
+   * fee are each `floor(price * bps / 10_000)`, and the seller keeps the
+   * remainder, so the three parts always sum to `price`.
+   */
+  static computeResaleSplit(
+    price: bigint,
+    royaltyBps: number,
+    platformFeeBps: number,
+  ): { royaltyFee: bigint; platformFee: bigint; sellerProceeds: bigint } {
+    const royaltyFee = (price * BigInt(royaltyBps)) / 10_000n;
+    const platformFee = (price * BigInt(platformFeeBps)) / 10_000n;
+    return {
+      royaltyFee,
+      platformFee,
+      sellerProceeds: price - royaltyFee - platformFee,
+    };
+  }
+
   private assertResalePriceCap(
     price: bigint,
     originalPrice: bigint,
@@ -785,7 +808,10 @@ export class TicketsService {
       ['price', 2, BigInt(price)],
     ]);
 
-    const { txHash } = await this.stellar.submitSignedTransaction(signedXdr, this.attendeeSubmitOptions());
+    const { txHash } = await this.stellar.submitSignedTransaction(
+      signedXdr,
+      this.attendeeSubmitOptions(),
+    );
     // #376 — store the price the chain actually recorded, not the body's.
     const { resalePrice } = await this.stellar.verifyTicket(
       ticket.chainTicketId,
@@ -926,7 +952,10 @@ export class TicketsService {
       ['owner', 0, owner.stellarPublicKey],
       ['ticket', 1, ticket.chainTicketId],
     ]);
-    await this.stellar.submitSignedTransaction(signedXdr, this.attendeeSubmitOptions());
+    await this.stellar.submitSignedTransaction(
+      signedXdr,
+      this.attendeeSubmitOptions(),
+    );
 
     return this.prisma.$transaction(async (tx) => {
       await tx.ticket.update({
@@ -964,7 +993,10 @@ export class TicketsService {
       ['buyer', 0, buyer.stellarPublicKey],
       ['ticket', 1, ticket.chainTicketId],
     ]);
-    await this.stellar.submitSignedTransaction(signedXdr, this.attendeeSubmitOptions());
+    await this.stellar.submitSignedTransaction(
+      signedXdr,
+      this.attendeeSubmitOptions(),
+    );
 
     return this.prisma.$transaction(async (tx) => {
       await tx.resaleListing.updateMany({
@@ -1028,23 +1060,43 @@ export class TicketsService {
     const nextCursor =
       hasMore && last ? this.encodeResaleCursor(last.createdAt, last.id) : null;
 
-    // #320 — Compute royalty fee and seller proceeds for each listing so
-    // clients don't have to duplicate the contract math.
-    // royaltyFee   = floor(price * royaltyBps / 10_000)
-    // sellerProceeds = price - royaltyFee
+    // #320 / #520 — precompute the settlement split so clients don't have to
+    // duplicate the contract math. It mirrors `resale_split` in `buy_resale`,
+    // including the platform's resale fee, so `sellerProceeds` is what the
+    // seller actually receives.
+    const platformFeeBps = items.length > 0 ? await this.resaleFeeBps() : 0;
     const enrichedItems = items.map((listing) => {
-      const price = listing.price;
-      const royaltyBps = listing.ticket.event.royaltyBps;
-      const royaltyFee = (price * BigInt(royaltyBps)) / 10_000n;
-      const sellerProceeds = price - royaltyFee;
+      const { price } = listing;
+      const { royaltyBps } = listing.ticket.event;
+      if (platformFeeBps === null) {
+        // The fee could not be read: show the royalty, but don't guess at
+        // proceeds — an overstated figure is the bug #520 fixed.
+        return {
+          ...listing,
+          royaltyFee: (price * BigInt(royaltyBps)) / 10_000n,
+          platformFee: null,
+          sellerProceeds: null,
+        };
+      }
       return {
         ...listing,
-        royaltyFee,
-        sellerProceeds,
+        ...TicketsService.computeResaleSplit(price, royaltyBps, platformFeeBps),
       };
     });
 
     return { items: enrichedItems, nextCursor, limit: take };
+  }
+
+  /** The contract's resale fee in bps, or null when it cannot be read (#520). */
+  private async resaleFeeBps(): Promise<number | null> {
+    try {
+      return await this.stellar.getResaleFeeBps();
+    } catch (err) {
+      this.logger.warn(
+        `Resale fee unavailable; omitting seller proceeds: ${(err as Error).message}`,
+      );
+      return null;
+    }
   }
 
   findMine(userId: string, status?: TicketStatus) {

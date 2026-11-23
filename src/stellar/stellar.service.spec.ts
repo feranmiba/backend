@@ -669,6 +669,69 @@ describe('StellarService (contract-mock harness)', () => {
     });
   });
 
+  describe('getResaleFeeBps (#520)', () => {
+    const feeScVal = (resaleBps: number) =>
+      nativeToScVal(
+        { primary_bps: 100, recipient: ORGANIZER, resale_bps: resaleBps },
+        {
+          type: {
+            primary_bps: ['symbol', 'u32'],
+            recipient: ['symbol', 'address'],
+            resale_bps: ['symbol', 'u32'],
+          },
+        },
+      );
+
+    it('reads resale_bps from platform_fee, not the primary fee', async () => {
+      const { service, server } = createStellarHarness();
+      server.simulateTransaction.mockResolvedValue(
+        simulationSuccess(feeScVal(250)),
+      );
+
+      await expect(service.getResaleFeeBps()).resolves.toBe(250);
+      const simulated = decodeInvokeHostFunction(
+        server.simulateTransaction.mock.calls[0][0].toXDR(),
+        Networks.TESTNET,
+      );
+      expect(simulated).toMatchObject({
+        functionName: 'platform_fee',
+        args: [],
+      });
+    });
+
+    it('is 0 when no platform fee is configured', async () => {
+      const { service, server } = createStellarHarness();
+      server.simulateTransaction.mockResolvedValue(
+        simulationSuccess(nativeToScVal(null)),
+      );
+
+      await expect(service.getResaleFeeBps()).resolves.toBe(0);
+    });
+
+    it('caches the fee, and falls back to the last value when a refresh fails', async () => {
+      jest.useFakeTimers({ now: new Date('2026-11-23T00:00:00Z') });
+      const { service, server } = createStellarHarness();
+      server.simulateTransaction.mockResolvedValue(
+        simulationSuccess(feeScVal(250)),
+      );
+
+      await service.getResaleFeeBps();
+      await service.getResaleFeeBps();
+      expect(server.simulateTransaction).toHaveBeenCalledTimes(1);
+
+      jest.setSystemTime(new Date('2026-11-23T00:02:00Z'));
+      server.simulateTransaction.mockResolvedValue(simulationError('boom'));
+      await expect(service.getResaleFeeBps()).resolves.toBe(250);
+    });
+
+    it('throws when the fee has never been read and the RPC fails', async () => {
+      const { service, server } = createStellarHarness();
+      server.simulateTransaction.mockResolvedValue(simulationError('boom'));
+
+      await expect(service.getResaleFeeBps()).rejects.toThrow(/platform_fee/);
+    });
+  });
+
   describe('read-only simulations', () => {
     it('verifyTicket simulates from the platform signer and decodes the Ticket struct', async () => {
       const { service, server, platformSigner } = createStellarHarness();
