@@ -19,6 +19,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { UNASSIGNED_SEAT } from '../common/constants/seat.constant';
+import { REVOKE_BATCH_CHUNK_SIZE } from '../common/constants/revoke-batch.constant';
 import {
   ListingInactiveError,
   TicketTypeSoldOutError,
@@ -43,7 +44,7 @@ const OFFLINE_TOKEN_TTL_SECONDS = 12 * 60 * 60;
 /** Plain JSON for `ProcessedTx.response`: BigInts become strings, as they do in HTTP responses. */
 function toStoredResponse(value: unknown): Prisma.InputJsonValue {
   if (value === undefined || value === null) {
-    return Prisma.JsonNull;
+    return Prisma.JsonNull as unknown as Prisma.InputJsonValue;
   }
   return JSON.parse(
     JSON.stringify(value, (_key, v: unknown) =>
@@ -187,8 +188,7 @@ export class TicketsService {
     ticketTypeId: string,
     recipients: Array<{ toUserId: string; toPublicKey: string; seat?: string }>,
   ) {
-    const maxBatchSize =
-      this.config?.get<number>('ISSUE_BATCH_MAX_SIZE') ?? 50;
+    const maxBatchSize = this.config?.get<number>('ISSUE_BATCH_MAX_SIZE') ?? 50;
     if (recipients.length > maxBatchSize) {
       throw new BadRequestException(
         `Batch size exceeds the maximum of ${maxBatchSize} recipients`,
@@ -284,23 +284,22 @@ export class TicketsService {
       );
     }
     const buyer = await this.getUserWithWallet(buyerId);
-    const price = promoCode
-      ? (
-          await this.promoCodes!.validate(
-            event.id,
-            buyerId,
-            promoCode,
-            ticketType.price,
-          )
-        ).discountedPrice
-      : ticketType.price;
+    // The on-chain tier price is the contract's source of truth after #127;
+    // still validate a promo code here so an invalid one fails at build time.
+    if (promoCode) {
+      await this.promoCodes!.validate(
+        event.id,
+        buyerId,
+        promoCode,
+        ticketType.price,
+      );
+    }
 
     const unsignedXdr = await this.stellar.buildPurchasePrimaryTx({
       buyerPublicKey: buyer.stellarPublicKey!,
       chainEventId: event.chainEventId,
       tier: ticketType.name,
       seat: seat ?? UNASSIGNED_SEAT,
-      price,
     });
     return { unsignedXdr };
   }
@@ -326,8 +325,10 @@ export class TicketsService {
     ]);
     // #211 — fail fast on duplicate assigned seats before touching the chain.
     await this.assertSeatAvailable(event.id, seat);
-    const { result, txHash } =
-      await this.stellar.submitSignedTransaction(signedXdr, this.attendeeSubmitOptions());
+    const { result, txHash } = await this.stellar.submitSignedTransaction(
+      signedXdr,
+      this.attendeeSubmitOptions(),
+    );
     const chainTicketId = result as bigint;
 
     let ticket;
@@ -415,7 +416,10 @@ export class TicketsService {
       ['ticket', 1, ticket.chainTicketId],
       ['recipient', 2, toUser.stellarPublicKey],
     ]);
-    await this.stellar.submitSignedTransaction(signedXdr, this.attendeeSubmitOptions());
+    await this.stellar.submitSignedTransaction(
+      signedXdr,
+      this.attendeeSubmitOptions(),
+    );
 
     // #375 — the chain is the source of truth for ownership: only record
     // toUserId once the on-chain owner is confirmed to be their wallet.
@@ -641,6 +645,8 @@ export class TicketsService {
         where: { id: ticketId },
         data: { status: TicketStatus.REVOKED },
       });
+      // #500 — a revoked ticket must not keep a live resale listing.
+      await this.cancelActiveListings(tx, [ticketId]);
       await this.recordProcessedTx(tx, signedXdr, 'revoke', row);
       return row;
     });
@@ -651,40 +657,171 @@ export class TicketsService {
     return revoked;
   }
 
-  async revokeBatch(userId: string, eventId: string, ticketIds: string[]) {
-    const MAX_BATCH_SIZE = 100;
-    if (ticketIds.length > MAX_BATCH_SIZE) {
+  /**
+   * #499 — step 1 of batch revocation. Returns one unsigned `revoke_batch`
+   * envelope per 35-ticket chunk, in the same order as the chunks the confirm
+   * step validates.
+   */
+  async buildRevokeBatch(userId: string, eventId: string, ticketIds: string[]) {
+    const { event, tickets } = await this.loadBatchForOrganizer(
+      userId,
+      eventId,
+      ticketIds,
+    );
+    const chunks = this.revokeChunks(
+      tickets.map((ticket) => ticket.chainTicketId),
+    );
+    const unsignedXdrs: string[] = [];
+    for (const chunk of chunks) {
+      unsignedXdrs.push(
+        await this.stellar.buildRevokeBatchTx({
+          organizerPublicKey: event.organization.stellarAccount,
+          chainTicketIds: chunk,
+        }),
+      );
+    }
+    return {
+      unsignedXdrs,
+      chunkSize: REVOKE_BATCH_CHUNK_SIZE,
+    };
+  }
+
+  /**
+   * #499/#500 — step 2 of batch revocation. Validates every signed envelope
+   * against its expected chunk, submits all of them before touching the DB,
+   * then revokes tickets and cancels their ACTIVE resale listings atomically.
+   */
+  async confirmRevokeBatch(
+    userId: string,
+    eventId: string,
+    ticketIds: string[],
+    signedXdrs: string[],
+  ) {
+    const { event, tickets } = await this.loadBatchForOrganizer(
+      userId,
+      eventId,
+      ticketIds,
+    );
+    const chunks = this.revokeChunks(
+      tickets.map((ticket) => ticket.chainTicketId),
+    );
+    if (signedXdrs.length !== chunks.length) {
       throw new BadRequestException(
-        `Cannot revoke more than ${MAX_BATCH_SIZE} tickets at once`,
+        `Expected ${chunks.length} signed revoke_batch transaction(s), got ${signedXdrs.length}`,
       );
     }
 
-    const event = await this.getEventWithOrg(eventId);
-    await this.organizations.assertMember(event.organizationId, userId);
-
-    const tickets = await this.prisma.ticket.findMany({
-      where: {
-        id: { in: ticketIds },
-        eventId,
-      },
-    });
-
-    if (tickets.length !== ticketIds.length) {
-      throw new BadRequestException(
-        'Some tickets were not found or do not belong to this event',
+    const processed = await Promise.all(
+      signedXdrs.map((xdr) => this.findProcessedTx<{ count: number }>(xdr)),
+    );
+    if (processed.every((entry) => entry !== null)) {
+      return processed[0].value;
+    }
+    if (processed.some((entry) => entry !== null)) {
+      throw new ConflictException(
+        'Batch revocation has already been partially confirmed',
       );
     }
 
-    const result = await this.prisma.ticket.updateMany({
-      where: { id: { in: ticketIds } },
-      data: { status: TicketStatus.REVOKED },
+    // Validate the entire batch before any network call: a mismatched chunk
+    // must never revoke tickets the organizer did not ask to revoke.
+    signedXdrs.forEach((signedXdr, index) => {
+      const invocation = this.assertSignedInvocation(
+        signedXdr,
+        'revoke_batch',
+        [['organizer', 0, event.organization.stellarAccount]],
+      );
+      const signedIds = invocation.args[1];
+      if (
+        !Array.isArray(signedIds) ||
+        signedIds.length !== chunks[index].length ||
+        signedIds.some((id, i) => id !== chunks[index][i])
+      ) {
+        throw new BadRequestException(
+          `Signed transaction revoke_batch chunk ${index + 1} does not match the request`,
+        );
+      }
     });
+
+    for (const signedXdr of signedXdrs) {
+      await this.stellar.submitSignedTransaction(signedXdr);
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.ticket.updateMany({
+        where: { id: { in: ticketIds }, eventId },
+        data: { status: TicketStatus.REVOKED },
+      });
+      await this.cancelActiveListings(tx, ticketIds);
+      for (const signedXdr of signedXdrs) {
+        await this.recordProcessedTx(tx, signedXdr, 'revoke-batch', {
+          count: updated.count,
+        });
+      }
+      return updated;
+    });
+
     // #209 — audit batch revocation (one entry per batch).
     await this.audit?.record(userId, 'ticket.revoke_batch', 'Event', eventId, {
       ticketIds,
       count: result.count,
     });
     return result;
+  }
+
+  /** Splits chain ticket ids into contract-sized `revoke_batch` chunks. */
+  private revokeChunks(ticketIds: bigint[]): bigint[][] {
+    const chunks: bigint[][] = [];
+    for (let i = 0; i < ticketIds.length; i += REVOKE_BATCH_CHUNK_SIZE) {
+      chunks.push(ticketIds.slice(i, i + REVOKE_BATCH_CHUNK_SIZE));
+    }
+    return chunks;
+  }
+
+  /** #500 — shared by single and batch revoke confirmations. */
+  private cancelActiveListings(
+    tx: Prisma.TransactionClient,
+    ticketIds: string[],
+  ) {
+    return tx.resaleListing.updateMany({
+      where: {
+        ticketId: ticketIds.length === 1 ? ticketIds[0] : { in: ticketIds },
+        status: ResaleListingStatus.ACTIVE,
+      },
+      data: { status: ResaleListingStatus.CANCELLED },
+    });
+  }
+
+  /** Loads and validates the tickets for an organizer's batch revocation. */
+  private async loadBatchForOrganizer(
+    userId: string,
+    eventId: string,
+    ticketIds: string[],
+  ) {
+    const MAX_BATCH_SIZE = 100;
+    if (ticketIds.length === 0 || ticketIds.length > MAX_BATCH_SIZE) {
+      throw new BadRequestException(
+        `Revoke between 1 and ${MAX_BATCH_SIZE} tickets at once`,
+      );
+    }
+
+    const event = await this.getEventWithOrg(eventId);
+    await this.organizations.assertMember(event.organizationId, userId);
+    if (event.status !== EventStatus.PUBLISHED || event.chainEventId === null) {
+      throw new BadRequestException(
+        'Event has not been published on-chain yet',
+      );
+    }
+
+    const tickets = await this.prisma.ticket.findMany({
+      where: { id: { in: ticketIds }, eventId },
+    });
+    if (tickets.length !== ticketIds.length) {
+      throw new BadRequestException(
+        'Some tickets were not found or do not belong to this event',
+      );
+    }
+    return { event, tickets };
   }
 
   private async assertWithinResaleLimit(userId: string) {
@@ -785,7 +922,10 @@ export class TicketsService {
       ['price', 2, BigInt(price)],
     ]);
 
-    const { txHash } = await this.stellar.submitSignedTransaction(signedXdr, this.attendeeSubmitOptions());
+    const { txHash } = await this.stellar.submitSignedTransaction(
+      signedXdr,
+      this.attendeeSubmitOptions(),
+    );
     // #376 — store the price the chain actually recorded, not the body's.
     const { resalePrice } = await this.stellar.verifyTicket(
       ticket.chainTicketId,
@@ -926,7 +1066,10 @@ export class TicketsService {
       ['owner', 0, owner.stellarPublicKey],
       ['ticket', 1, ticket.chainTicketId],
     ]);
-    await this.stellar.submitSignedTransaction(signedXdr, this.attendeeSubmitOptions());
+    await this.stellar.submitSignedTransaction(
+      signedXdr,
+      this.attendeeSubmitOptions(),
+    );
 
     return this.prisma.$transaction(async (tx) => {
       await tx.ticket.update({
@@ -964,7 +1107,10 @@ export class TicketsService {
       ['buyer', 0, buyer.stellarPublicKey],
       ['ticket', 1, ticket.chainTicketId],
     ]);
-    await this.stellar.submitSignedTransaction(signedXdr, this.attendeeSubmitOptions());
+    await this.stellar.submitSignedTransaction(
+      signedXdr,
+      this.attendeeSubmitOptions(),
+    );
 
     return this.prisma.$transaction(async (tx) => {
       await tx.resaleListing.updateMany({
@@ -1421,7 +1567,7 @@ export class TicketsService {
     signedXdr: string,
     fn: string,
     expected: Array<[label: string, index: number, value: unknown]>,
-  ) {
+  ): SignedInvocation {
     let invocation: SignedInvocation;
     try {
       invocation = this.stellar.decodeSignedInvocation(signedXdr);
@@ -1442,6 +1588,7 @@ export class TicketsService {
         );
       }
     }
+    return invocation;
   }
 
   private encodeResaleCursor(createdAt: Date, id: string): string {

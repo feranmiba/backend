@@ -231,6 +231,7 @@ export class EventsService {
       category: event.category,
       maxResaleMultiplierBps: event.maxResaleMultiplierBps,
       royaltyBps: event.royaltyBps,
+      startsAt: BigInt(Math.floor(event.startsAt.getTime() / 1000)),
     });
     return { unsignedXdr };
   }
