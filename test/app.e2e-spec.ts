@@ -45,6 +45,10 @@ describe('AppController (e2e)', () => {
     await app.close();
   });
 });
+if (await this.findProcessedTx<null>(signedXdr)) return;
+if (ticket.status !== TicketStatus.RESALE) {
+  throw new ListingInactiveError();
+}
 
 /**
  * Auth flow (#409): register, login, GET /users/me, and a request without a
