@@ -95,34 +95,16 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       );
     }
 
- fix/issues-395-396-397-398-runtime-hardening
     const responseBody = {
       statusCode,
       code,
       message,
       ...(code === 'INTERNAL_ERROR' && {
         error: 'Internal Server Error',
-        requestId: this.getRequestId(request),
+        requestId: requestId ?? randomUUID(),
       }),
     };
     response.status(statusCode).json(responseBody);
-  }
-
-  private getRequestId(request: Request): string {
-    const header = request.headers['x-request-id'];
-    return (Array.isArray(header) ? header[0] : header) ?? randomUUID();
-
-    const errorBody: Record<string, unknown> = {
-      statusCode,
-      code,
-      message,
-    };
-    if (requestId) {
-      errorBody.requestId = requestId;
-    }
-
-    response.status(statusCode).json(errorBody);
- main
   }
 
   private getPrismaErrorMessage(

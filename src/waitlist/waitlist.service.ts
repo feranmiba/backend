@@ -1,18 +1,136 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
+  Optional,
+  OnModuleDestroy,
+  OnModuleInit,
 } from '@nestjs/common';
 import { WaitlistEntryStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { OrganizationsService } from '../organizations/organizations.service';
+import { NotificationService } from '../notifications/notifications.service';
+
+/** Cadence for checking and rolling forward expired waitlist offers (every 60 seconds). */
+export const WAITLIST_EXPIRY_CHECK_INTERVAL_MS = 60_000;
 
 @Injectable()
-export class WaitlistService {
+export class WaitlistService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(WaitlistService.name);
+  private timer?: NodeJS.Timeout;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly organizations: OrganizationsService,
+    @Optional() private readonly notifications?: NotificationService,
   ) {}
+
+  onModuleInit() {
+    this.startCron();
+  }
+
+  onModuleDestroy() {
+    this.stopCron();
+  }
+
+  startCron() {
+    void this.checkExpiredOffers();
+    this.timer = setInterval(() => {
+      void this.checkExpiredOffers();
+    }, WAITLIST_EXPIRY_CHECK_INTERVAL_MS);
+  }
+
+  stopCron() {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+  }
+
+  async checkExpiredOffers(): Promise<{
+    expiredCount: number;
+    rolledForwardCount: number;
+  }> {
+    try {
+      const result = await this.rollForwardExpiredOffers();
+      if (result.expiredCount > 0) {
+        this.logger.log(
+          `Expired ${result.expiredCount} waitlist offer(s) and rolled forward ${result.rolledForwardCount} new offer(s).`,
+        );
+      }
+      return result;
+    } catch (err) {
+      this.logger.error('Failed to roll forward expired waitlist offers', err);
+      return { expiredCount: 0, rolledForwardCount: 0 };
+    }
+  }
+
+  /**
+   * Finds all OFFERED waitlist entries whose offerExpiresAt has passed, marks them
+   * EXPIRED, and rolls the offer forward to the next WAITING entry in FIFO order for
+   * each ticket type.
+   */
+  async rollForwardExpiredOffers(
+    now: Date = new Date(),
+    windowMs = 24 * 60 * 60 * 1000,
+  ): Promise<{ expiredCount: number; rolledForwardCount: number }> {
+    const expired = await this.prisma.waitlistEntry.findMany({
+      where: {
+        status: WaitlistEntryStatus.OFFERED,
+        offerExpiresAt: { lte: now },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (expired.length === 0) {
+      return { expiredCount: 0, rolledForwardCount: 0 };
+    }
+
+    const expiredIds = expired.map((e) => e.id);
+    await this.prisma.waitlistEntry.updateMany({
+      where: { id: { in: expiredIds } },
+      data: { status: WaitlistEntryStatus.EXPIRED },
+    });
+
+    // Group count of expired offers by ticketTypeId
+    const countsByTicketType = new Map<string, number>();
+    for (const entry of expired) {
+      const current = countsByTicketType.get(entry.ticketTypeId) ?? 0;
+      countsByTicketType.set(entry.ticketTypeId, current + 1);
+    }
+
+    let rolledForwardCount = 0;
+    const nextOfferExpiresAt = new Date(now.getTime() + windowMs);
+
+    for (const [ticketTypeId, count] of countsByTicketType.entries()) {
+      const nextWaiting = await this.prisma.waitlistEntry.findMany({
+        where: {
+          ticketTypeId,
+          status: WaitlistEntryStatus.WAITING,
+        },
+        orderBy: { createdAt: 'asc' },
+        take: count,
+      });
+
+      if (nextWaiting.length > 0) {
+        await this.prisma.waitlistEntry.updateMany({
+          where: { id: { in: nextWaiting.map((e) => e.id) } },
+          data: {
+            status: WaitlistEntryStatus.OFFERED,
+            offeredAt: now,
+            offerExpiresAt: nextOfferExpiresAt,
+          },
+        });
+        rolledForwardCount += nextWaiting.length;
+      }
+    }
+
+    return {
+      expiredCount: expired.length,
+      rolledForwardCount,
+    };
+  }
 
   /**
    * Joins the waitlist for a sold-out ticket type. Ordering is fair: a row's
@@ -126,6 +244,7 @@ export class WaitlistService {
       where: { ticketTypeId, status: WaitlistEntryStatus.WAITING },
       orderBy: { createdAt: 'asc' },
       take: count,
+      include: { user: true },
     });
 
     const now = new Date();
@@ -138,7 +257,32 @@ export class WaitlistService {
         offerExpiresAt,
       },
     });
-    return next.map((e) => ({ ...e, status: WaitlistEntryStatus.OFFERED }));
+
+    // #561 — Send email notifications to waitlist users who received offers
+    if (this.notifications) {
+      for (const entry of next) {
+        this.notifications
+          .sendWaitlistOffer({
+            to: entry.user.email,
+            userName: entry.user.name,
+            eventName: ticketType.event.name,
+            ticketType: ticketType.name,
+            expiresAt: offerExpiresAt,
+          })
+          .catch((err) => {
+            // Fire and forget: log failures but don't block the offer
+            console.error(
+              `Failed to send waitlist offer email to ${entry.user.email}: ${err.message}`,
+            );
+          });
+      }
+    }
+
+    return next.map((e) => ({
+      ...e,
+      status: WaitlistEntryStatus.OFFERED,
+      user: undefined,
+    }));
   }
 
   /** Marks an OFFERED entry CONVERTED once the offered user actually buys. */

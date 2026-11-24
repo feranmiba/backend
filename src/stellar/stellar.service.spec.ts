@@ -66,25 +66,28 @@ describe('StellarService (contract-mock harness)', () => {
             category: 'CONCERTS',
             maxResaleMultiplierBps: 11_000,
             royaltyBps: 500,
+            startsAt: 100n,
           }),
         source: ORGANIZER,
         fn: 'create_event',
         args: [
           ORGANIZER,
           CHAIN_EVENT_ID,
-          'Launch Night',
-          'CONCERTS',
-          11_000,
-          500,
+          {
+            name: 'Launch Night',
+            category: 'CONCERTS',
+            max_resale_multiplier_bps: 11_000,
+            royalty_bps: 500,
+            starts_at: 100n,
+            transfer_freeze_seconds: 0n,
+            resale_cutoff_seconds: 0n,
+            max_per_wallet: null,
+            refund_window_seconds: null,
+            presale_starts_at: null,
+            presale_ends_at: null,
+          },
         ],
-        argTypes: [
-          'scvAddress',
-          'scvU64',
-          'scvString',
-          'scvString',
-          'scvU32',
-          'scvU32',
-        ],
+        argTypes: ['scvAddress', 'scvU64', 'scvMap'],
       },
       {
         method: 'buildIssueTicketTx',
@@ -117,12 +120,11 @@ describe('StellarService (contract-mock harness)', () => {
             chainEventId: CHAIN_EVENT_ID,
             tier: 'GA',
             seat: 'unassigned',
-            price: 2_500_000n,
           }),
         source: BUYER,
         fn: 'purchase_primary',
-        args: [BUYER, CHAIN_EVENT_ID, 'GA', 'unassigned', 2_500_000n],
-        argTypes: ['scvAddress', 'scvU64', 'scvString', 'scvString', 'scvI128'],
+        args: [BUYER, CHAIN_EVENT_ID, 'GA', 'unassigned'],
+        argTypes: ['scvAddress', 'scvU64', 'scvString', 'scvString'],
       },
       {
         method: 'buildTransferTicketTx',
@@ -160,6 +162,18 @@ describe('StellarService (contract-mock harness)', () => {
         fn: 'revoke_ticket',
         args: [ORGANIZER, CHAIN_TICKET_ID],
         argTypes: ['scvAddress', 'scvU64'],
+      },
+      {
+        method: 'buildRevokeBatchTx',
+        build: (s) =>
+          s.buildRevokeBatchTx({
+            organizerPublicKey: ORGANIZER,
+            chainTicketIds: [CHAIN_TICKET_ID, 8n],
+          }),
+        source: ORGANIZER,
+        fn: 'revoke_batch',
+        args: [ORGANIZER, [CHAIN_TICKET_ID, 8n]],
+        argTypes: ['scvAddress', 'scvVec'],
       },
       {
         method: 'buildListForResaleTx',
@@ -222,6 +236,16 @@ describe('StellarService (contract-mock harness)', () => {
         expect(server.prepareTransaction).toHaveBeenCalledTimes(1);
       },
     );
+
+    it('rejects a revoke_batch envelope larger than the contract limit', async () => {
+      const { service } = createStellarHarness();
+      await expect(
+        service.buildRevokeBatchTx({
+          organizerPublicKey: ORGANIZER,
+          chainTicketIds: Array.from({ length: 36 }, (_, i) => BigInt(i)),
+        }),
+      ).rejects.toThrow(/at most 35/);
+    });
 
     it('returns the envelope prepareTransaction produced, not the pre-simulation one', async () => {
       const { service, server } = createStellarHarness();
@@ -639,6 +663,104 @@ describe('StellarService (contract-mock harness)', () => {
     });
   });
 
+  describe('getTicketEvents', () => {
+    it('uses the event id as the paging cursor, since getEvents has no pagingToken', async () => {
+      const { service, server } = createStellarHarness();
+      server.getEvents.mockResolvedValue({
+        latestLedger: 120,
+        cursor: '0000000429496733696-0000000001',
+        events: [
+          {
+            id: '0000000429496733696-0000000001',
+            ledger: 100,
+            topic: [nativeToScVal('TicketCheckedIn', { type: 'symbol' })],
+            value: nativeToScVal(CHAIN_TICKET_ID, { type: 'u64' }),
+          },
+        ],
+      });
+
+      const {
+        events: [event],
+        latestLedger,
+      } = await service.getTicketEvents(undefined, 10);
+
+      expect(event).toEqual({
+        id: '0000000429496733696-0000000001',
+        pagingToken: '0000000429496733696-0000000001',
+        ledger: 100,
+        name: 'TicketCheckedIn',
+        chainTicketId: CHAIN_TICKET_ID,
+      });
+      expect(latestLedger).toBe(120);
+      expect(server.getEvents).toHaveBeenCalledWith(
+        expect.objectContaining({ startLedger: 500, limit: 10 }),
+      );
+    });
+  });
+
+  describe('getResaleFeeBps (#520)', () => {
+    const feeScVal = (resaleBps: number) =>
+      nativeToScVal(
+        { primary_bps: 100, recipient: ORGANIZER, resale_bps: resaleBps },
+        {
+          type: {
+            primary_bps: ['symbol', 'u32'],
+            recipient: ['symbol', 'address'],
+            resale_bps: ['symbol', 'u32'],
+          },
+        },
+      );
+
+    it('reads resale_bps from platform_fee, not the primary fee', async () => {
+      const { service, server } = createStellarHarness();
+      server.simulateTransaction.mockResolvedValue(
+        simulationSuccess(feeScVal(250)),
+      );
+
+      await expect(service.getResaleFeeBps()).resolves.toBe(250);
+      const simulated = decodeInvokeHostFunction(
+        server.simulateTransaction.mock.calls[0][0].toXDR(),
+        Networks.TESTNET,
+      );
+      expect(simulated).toMatchObject({
+        functionName: 'platform_fee',
+        args: [],
+      });
+    });
+
+    it('is 0 when no platform fee is configured', async () => {
+      const { service, server } = createStellarHarness();
+      server.simulateTransaction.mockResolvedValue(
+        simulationSuccess(nativeToScVal(null)),
+      );
+
+      await expect(service.getResaleFeeBps()).resolves.toBe(0);
+    });
+
+    it('caches the fee, and falls back to the last value when a refresh fails', async () => {
+      jest.useFakeTimers({ now: new Date('2026-11-23T00:00:00Z') });
+      const { service, server } = createStellarHarness();
+      server.simulateTransaction.mockResolvedValue(
+        simulationSuccess(feeScVal(250)),
+      );
+
+      await service.getResaleFeeBps();
+      await service.getResaleFeeBps();
+      expect(server.simulateTransaction).toHaveBeenCalledTimes(1);
+
+      jest.setSystemTime(new Date('2026-11-23T00:02:00Z'));
+      server.simulateTransaction.mockResolvedValue(simulationError('boom'));
+      await expect(service.getResaleFeeBps()).resolves.toBe(250);
+    });
+
+    it('throws when the fee has never been read and the RPC fails', async () => {
+      const { service, server } = createStellarHarness();
+      server.simulateTransaction.mockResolvedValue(simulationError('boom'));
+
+      await expect(service.getResaleFeeBps()).rejects.toThrow(/platform_fee/);
+    });
+  });
+
   describe('read-only simulations', () => {
     it('verifyTicket simulates from the platform signer and decodes the Ticket struct', async () => {
       const { service, server, platformSigner } = createStellarHarness();
@@ -845,7 +967,9 @@ describe('StellarService (contract-mock harness)', () => {
       });
       server.simulateTransaction
         .mockRejectedValueOnce(Object.assign(new Error('ECONNRESET')))
-        .mockRejectedValueOnce(Object.assign(new Error('5xx'), { response: { status: 503 } }))
+        .mockRejectedValueOnce(
+          Object.assign(new Error('5xx'), { response: { status: 503 } }),
+        )
         .mockResolvedValueOnce(simulationSuccess(event));
 
       const pending = service.getEvent(CHAIN_EVENT_ID);
@@ -861,7 +985,9 @@ describe('StellarService (contract-mock harness)', () => {
         Object.assign(new Error('bad request'), { response: { status: 400 } }),
       );
 
-      await expect(service.getEvent(CHAIN_EVENT_ID)).rejects.toThrow('bad request');
+      await expect(service.getEvent(CHAIN_EVENT_ID)).rejects.toThrow(
+        'bad request',
+      );
       expect(server.simulateTransaction).toHaveBeenCalledTimes(1);
     });
   });

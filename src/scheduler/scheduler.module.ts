@@ -6,6 +6,7 @@ import { ChainEventIndexerJob } from '../indexer/chain-event-indexer.job';
 import { IndexerModule } from '../indexer/indexer.module';
 import { StellarModule } from '../stellar/stellar.module';
 import { EventsModule } from '../events/events.module';
+import { MetricsModule } from '../common/metrics/metrics.module';
 import { TicketStatusReconciliationJob } from './ticket-status-reconciliation.job';
 import { DistributedLockService } from './distributed-lock.service';
 import { EventReminderJob } from './event-reminder.job';
@@ -39,6 +40,7 @@ export class SchedulerModule {
         IndexerModule,
         StellarModule,
         EventsModule,
+        MetricsModule,
       ],
       providers: [
         HeartbeatJob,

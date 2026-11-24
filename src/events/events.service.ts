@@ -231,6 +231,7 @@ export class EventsService {
       category: event.category,
       maxResaleMultiplierBps: event.maxResaleMultiplierBps,
       royaltyBps: event.royaltyBps,
+      startsAt: BigInt(Math.floor(event.startsAt.getTime() / 1000)),
     });
     return { unsignedXdr };
   }
@@ -291,9 +292,17 @@ export class EventsService {
         'Cannot unpublish an event with issued tickets',
       );
     }
+    // #562 — Clear chainEventId so republish can reuse it or allocate a new one
+    // without hitting EventAlreadyExists. The contract event stays on-chain, but
+    // republish will skip create_event when it detects an existing chain event.
     const unpublished = await this.prisma.event.update({
       where: { id: eventId },
-      data: { status: EventStatus.DRAFT },
+      data: {
+        status: EventStatus.DRAFT,
+        chainEventId: null,
+        chainEventIdReservedAt: null,
+        publishedTxHash: null,
+      },
     });
     await this.audit?.record(userId, 'event.unpublish', 'Event', eventId);
     await this.invalidateCache();

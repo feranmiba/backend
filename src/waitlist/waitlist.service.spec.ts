@@ -38,6 +38,10 @@ describe('WaitlistService', () => {
     );
   });
 
+  afterEach(() => {
+    service.stopCron();
+  });
+
   describe('join', () => {
     it('rejects joining a ticket type that still has capacity', async () => {
       prisma.ticketType.findUnique.mockResolvedValue({
@@ -75,14 +79,15 @@ describe('WaitlistService', () => {
         quantityTotal: 10,
       });
       prisma.waitlistEntry.findUnique.mockResolvedValue(null);
-      const createdAt = new Date('2026-01-01T00:00:00Z');
+      const createdAt = new Date('2026-09-01T12:00:00Z');
       prisma.waitlistEntry.create.mockResolvedValue({
-        id: 'entry-2',
+        id: 'entry-1',
         ticketTypeId: 'tt-1',
         userId: 'user-1',
+        status: WaitlistEntryStatus.WAITING,
         createdAt,
       });
-      prisma.waitlistEntry.count.mockResolvedValue(3);
+      prisma.waitlistEntry.count.mockResolvedValue(4);
 
       const result = await service.join('user-1', 'tt-1');
 
@@ -93,7 +98,7 @@ describe('WaitlistService', () => {
           createdAt: { lt: createdAt },
         },
       });
-      expect(result.position).toBe(4);
+      expect(result.position).toBe(5);
     });
 
     it('re-joins a previously CANCELLED entry instead of erroring', async () => {
@@ -102,21 +107,21 @@ describe('WaitlistService', () => {
         quantityIssued: 10,
         quantityTotal: 10,
       });
-      const createdAt = new Date();
       prisma.waitlistEntry.findUnique.mockResolvedValue({
         id: 'entry-1',
         status: WaitlistEntryStatus.CANCELLED,
-        createdAt,
       });
+      const createdAt = new Date('2026-09-01T12:00:00Z');
       prisma.waitlistEntry.update.mockResolvedValue({
         id: 'entry-1',
         ticketTypeId: 'tt-1',
+        userId: 'user-1',
         status: WaitlistEntryStatus.WAITING,
         createdAt,
       });
       prisma.waitlistEntry.count.mockResolvedValue(0);
 
-      await service.join('user-1', 'tt-1');
+      const result = await service.join('user-1', 'tt-1');
 
       expect(prisma.waitlistEntry.update).toHaveBeenCalledWith({
         where: { id: 'entry-1' },
@@ -126,6 +131,7 @@ describe('WaitlistService', () => {
           offerExpiresAt: null,
         },
       });
+      expect(result.position).toBe(1);
     });
   });
 
@@ -185,6 +191,184 @@ describe('WaitlistService', () => {
           }) as object,
         }),
       );
+    });
+  });
+
+  describe('rollForwardExpiredOffers', () => {
+    it('returns 0 counts when no offers are expired', async () => {
+      prisma.waitlistEntry.findMany.mockResolvedValue([]);
+
+      const result = await service.rollForwardExpiredOffers();
+
+      expect(result).toEqual({ expiredCount: 0, rolledForwardCount: 0 });
+      expect(prisma.waitlistEntry.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('moves expired OFFERED entries to EXPIRED and rolls forward to next WAITING entries', async () => {
+      const expiredOffer1 = {
+        id: 'offered-1',
+        ticketTypeId: 'tt-1',
+        status: WaitlistEntryStatus.OFFERED,
+      };
+      const expiredOffer2 = {
+        id: 'offered-2',
+        ticketTypeId: 'tt-1',
+        status: WaitlistEntryStatus.OFFERED,
+      };
+
+      const waitingEntry1 = {
+        id: 'waiting-1',
+        ticketTypeId: 'tt-1',
+        status: WaitlistEntryStatus.WAITING,
+      };
+      const waitingEntry2 = {
+        id: 'waiting-2',
+        ticketTypeId: 'tt-1',
+        status: WaitlistEntryStatus.WAITING,
+      };
+
+      prisma.waitlistEntry.findMany
+        .mockResolvedValueOnce([expiredOffer1, expiredOffer2])
+        .mockResolvedValueOnce([waitingEntry1, waitingEntry2]);
+
+      const now = new Date('2026-11-24T00:00:00Z');
+      const result = await service.rollForwardExpiredOffers(now);
+
+      expect(result).toEqual({ expiredCount: 2, rolledForwardCount: 2 });
+      expect(prisma.waitlistEntry.updateMany).toHaveBeenCalledWith({
+        where: { id: { in: ['offered-1', 'offered-2'] } },
+        data: { status: WaitlistEntryStatus.EXPIRED },
+      });
+      expect(prisma.waitlistEntry.findMany).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          where: { ticketTypeId: 'tt-1', status: WaitlistEntryStatus.WAITING },
+          orderBy: { createdAt: 'asc' },
+          take: 2,
+        }),
+      );
+      expect(prisma.waitlistEntry.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: { in: ['waiting-1', 'waiting-2'] } },
+          data: expect.objectContaining({
+            status: WaitlistEntryStatus.OFFERED,
+            offeredAt: now,
+          }) as object,
+        }),
+      );
+    });
+
+    it('handles multiple ticket types independently', async () => {
+      const expiredTt1 = {
+        id: 'offered-1',
+        ticketTypeId: 'tt-1',
+        status: WaitlistEntryStatus.OFFERED,
+      };
+      const expiredTt2 = {
+        id: 'offered-2',
+        ticketTypeId: 'tt-2',
+        status: WaitlistEntryStatus.OFFERED,
+      };
+
+      const waitingTt1 = {
+        id: 'waiting-1',
+        ticketTypeId: 'tt-1',
+        status: WaitlistEntryStatus.WAITING,
+      };
+      const waitingTt2 = {
+        id: 'waiting-2',
+        ticketTypeId: 'tt-2',
+        status: WaitlistEntryStatus.WAITING,
+      };
+
+      prisma.waitlistEntry.findMany
+        .mockResolvedValueOnce([expiredTt1, expiredTt2])
+        .mockResolvedValueOnce([waitingTt1])
+        .mockResolvedValueOnce([waitingTt2]);
+
+      const result = await service.rollForwardExpiredOffers();
+
+      expect(result).toEqual({ expiredCount: 2, rolledForwardCount: 2 });
+      expect(prisma.waitlistEntry.updateMany).toHaveBeenCalledWith({
+        where: { id: { in: ['offered-1', 'offered-2'] } },
+        data: { status: WaitlistEntryStatus.EXPIRED },
+      });
+    });
+
+    it('handles case where fewer WAITING entries exist than expired offers', async () => {
+      const expiredTt1A = {
+        id: 'offered-1',
+        ticketTypeId: 'tt-1',
+        status: WaitlistEntryStatus.OFFERED,
+      };
+      const expiredTt1B = {
+        id: 'offered-2',
+        ticketTypeId: 'tt-1',
+        status: WaitlistEntryStatus.OFFERED,
+      };
+
+      const onlyWaiting = {
+        id: 'waiting-1',
+        ticketTypeId: 'tt-1',
+        status: WaitlistEntryStatus.WAITING,
+      };
+
+      prisma.waitlistEntry.findMany
+        .mockResolvedValueOnce([expiredTt1A, expiredTt1B])
+        .mockResolvedValueOnce([onlyWaiting]);
+
+      const result = await service.rollForwardExpiredOffers();
+
+      expect(result).toEqual({ expiredCount: 2, rolledForwardCount: 1 });
+      expect(prisma.waitlistEntry.updateMany).toHaveBeenCalledWith({
+        where: { id: { in: ['waiting-1'] } },
+        data: expect.objectContaining({
+          status: WaitlistEntryStatus.OFFERED,
+        }) as object,
+      });
+    });
+  });
+
+  describe('scheduled job and cron lifecycle', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('starts cron and runs initial check on module init, then triggers periodically', () => {
+      const checkSpy = jest
+        .spyOn(service, 'checkExpiredOffers')
+        .mockResolvedValue({
+          expiredCount: 0,
+          rolledForwardCount: 0,
+        });
+
+      service.onModuleInit();
+
+      expect(checkSpy).toHaveBeenCalledTimes(1);
+
+      jest.advanceTimersByTime(60_000);
+      expect(checkSpy).toHaveBeenCalledTimes(2);
+
+      jest.advanceTimersByTime(60_000);
+      expect(checkSpy).toHaveBeenCalledTimes(3);
+
+      service.stopCron();
+      jest.advanceTimersByTime(60_000);
+      expect(checkSpy).toHaveBeenCalledTimes(3);
+    });
+
+    it('handles errors during checkExpiredOffers gracefully without throwing', async () => {
+      jest
+        .spyOn(service, 'rollForwardExpiredOffers')
+        .mockRejectedValue(new Error('DB failure'));
+
+      const result = await service.checkExpiredOffers();
+
+      expect(result).toEqual({ expiredCount: 0, rolledForwardCount: 0 });
     });
   });
 });

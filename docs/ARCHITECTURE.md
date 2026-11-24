@@ -211,7 +211,7 @@ sequenceDiagram
     rect rgb(240, 255, 240)
         Note over Client,RPC: Buy from the marketplace (buyer signs)
         Client->>API: GET /v1/tickets/resale
-        API-->>Client: ACTIVE listings with royaltyFee and sellerProceeds precomputed
+        API-->>Client: ACTIVE listings with royaltyFee, platformFee and sellerProceeds precomputed
         Client->>API: POST /v1/tickets/:ticketId/buy-resale
         API->>Postgres: ticket status must be RESALE
         API->>Stellar: buildBuyResaleTx(buyer, chainTicketId)
@@ -309,9 +309,13 @@ Ed25519-signed offline token instead of calling `verify`; see
 ### Revoke (organizer voids a ticket)
 
 Revocation follows the check-in shape with `revoke_ticket` and ends in
-`status = REVOKED`. `POST /v1/tickets/events/:eventId/revoke-batch`
-revokes up to 100 tickets in the read-model only, for fraud response
-where per-ticket signing would be too slow.
+`status = REVOKED`. Batch revocation is also non-custodial: the build step
+splits 1–100 ticket ids into chunks of 35 (the contract's `MAX_BATCH_SIZE`)
+and returns one unsigned `revoke_batch` envelope per chunk. The confirm step
+validates every signed envelope against its expected chunk, submits all of
+them, and only then writes `status = REVOKED` to the read model. Both single
+and batch confirmation set an `ACTIVE` resale listing to `CANCELLED` in the
+same Prisma transaction, so a revoked ticket cannot stay listed for resale.
 
 ### Ticket status transitions
 
@@ -325,8 +329,8 @@ stateDiagram-v2
     RESALE --> VALID: confirm-cancel-resale, cancel-expired, confirm-buy-resale (new owner)
     VALID --> VALID: confirm-transfer (new owner)
     VALID --> USED: confirm-check-in / scanner-check-in
-    VALID --> REVOKED: confirm-revoke / revoke-batch
-    RESALE --> REVOKED: confirm-revoke / revoke-batch
+    VALID --> REVOKED: confirm-revoke / confirm-revoke-batch
+    RESALE --> REVOKED: confirm-revoke / confirm-revoke-batch
 ```
 
 `GET /v1/tickets/verify/:qrSecret` overwrites the cached status with

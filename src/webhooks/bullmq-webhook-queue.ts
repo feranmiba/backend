@@ -14,6 +14,12 @@ export interface QueueLike {
   close(): Promise<void>;
 }
 
+/** Callback to be invoked when a webhook fails all retries. */
+export type WebhookFailureCallback = (
+  delivery: WebhookDelivery,
+  error: Error,
+) => Promise<void>;
+
 /** The slice of a BullMQ `Worker` this module uses. */
 export interface WorkerLike {
   on(event: 'error', listener: (err: Error) => void): unknown;
@@ -50,6 +56,8 @@ export interface BullMqWebhookQueueOptions {
   attempts: number;
   /** Base delay before the first retry; doubles on every further retry. */
   backoffMs: number;
+  /** Callback to invoke when a webhook fails all retries. */
+  onFinalFailure?: WebhookFailureCallback;
 }
 
 /** Only the host is logged: the path or query of a webhook URL can carry a secret. */
@@ -66,11 +74,12 @@ export class BullMqWebhookQueue implements WebhookQueue, OnModuleDestroy {
   constructor(
     private readonly queue: QueueLike,
     private readonly worker: WorkerLike,
+    private readonly onFinalFailure?: WebhookFailureCallback,
   ) {}
 
   static create(
     bullmq: BullMqLike,
-    { connection, attempts, backoffMs }: BullMqWebhookQueueOptions,
+    { connection, attempts, backoffMs, onFinalFailure }: BullMqWebhookQueueOptions,
   ): BullMqWebhookQueue {
     const logger = new Logger('WebhookQueue');
 
@@ -108,6 +117,15 @@ export class BullMqWebhookQueue implements WebhookQueue, OnModuleDestroy {
           `(attempt ${job.attemptsMade}/${attempts}, ` +
           `${remaining > 0 ? 'will retry' : 'giving up'}): ${err.message}`,
       );
+      // #547 — when all retries are exhausted, invoke the callback so the
+      // endpoint can be disabled.
+      if (remaining === 0 && onFinalFailure) {
+        onFinalFailure(job.data, err).catch((callbackErr) => {
+          logger.error(
+            `Webhook final failure callback error: ${callbackErr.message}`,
+          );
+        });
+      }
     });
     worker.on('completed', (job) => {
       if (!job) return;
@@ -117,7 +135,7 @@ export class BullMqWebhookQueue implements WebhookQueue, OnModuleDestroy {
       );
     });
 
-    return new BullMqWebhookQueue(queue, worker);
+    return new BullMqWebhookQueue(queue, worker, onFinalFailure);
   }
 
   async enqueue(delivery: WebhookDelivery): Promise<boolean> {
