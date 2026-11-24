@@ -5,7 +5,6 @@ import {
   Contract,
   FeeBumpTransaction,
   Keypair,
-  nativeToScVal,
   scValToNative,
   Transaction,
   TransactionBuilder,
@@ -13,12 +12,29 @@ import {
   BASE_FEE,
   xdr,
 } from '@stellar/stellar-sdk';
+import {
+  contractArgs,
+  encodeBuyResale,
+  encodeCancelResale,
+  encodeCheckIn,
+  encodeCreateEvent,
+  encodeIssueTicket,
+  encodeListForResale,
+  encodePurchasePrimary,
+  encodeRevokeBatch,
+  encodeRevokeTicket,
+  encodeTransferTicket,
+  type EventParams,
+} from './ticketing-bindings';
 import { CircuitBreaker } from './circuit-breaker';
 import {
   NETWORK_PASSPHRASES,
   StellarNetwork,
 } from '../config/stellar-networks';
 import { mapSorobanErrorToApiException } from './soroban-errors';
+import { REVOKE_BATCH_CHUNK_SIZE } from '../common/constants/revoke-batch.constant';
+
+export { REVOKE_BATCH_CHUNK_SIZE };
 
 export interface OnChainTicket {
   eventId: bigint;
@@ -167,7 +183,7 @@ export class StellarService {
       DEFAULT_RPC_TIMEOUT_MS;
     this.server = new rpc.Server(rpcUrl, {
       allowHttp: rpcUrl.startsWith('http://'),
-      timeoutInSeconds: Math.ceil(rpcTimeoutMs / 1000),
+      timeout: rpcTimeoutMs,
     });
     this.contractId = this.config.getOrThrow<string>('TICKETING_CONTRACT_ID');
     this.contract = new Contract(this.contractId);
@@ -207,27 +223,32 @@ export class StellarService {
   /**
    * Poll/check status of a transaction by hash (Issue #149).
    */
-  async getTransactionStatus(txHash: string): Promise<{ status: string; latestLedger?: number; resultXdr?: string }> {
+  async getTransactionStatus(
+    txHash: string,
+  ): Promise<{ status: string; latestLedger?: number; resultXdr?: string }> {
     const tx = await this.rpcCall(() => this.server.getTransaction(txHash));
+    const resultXdr = 'resultXdr' in tx ? tx.resultXdr : undefined;
     return {
       status: tx.status,
       latestLedger: tx.latestLedger,
-      resultXdr: tx.resultXdr?.toXDR('base64'),
+      resultXdr: resultXdr?.toXDR('base64'),
     };
   }
 
   /** Read-only simulation — no signature, no ledger write, no fee. */
   async verifyTicket(chainTicketId: bigint): Promise<OnChainTicket> {
-    const result = await this.simulateRead('verify_ticket', [
-      nativeToScVal(chainTicketId, { type: 'u64' }),
-    ]);
+    const result = await this.simulateRead(
+      'verify_ticket',
+      contractArgs('verify_ticket', { ticket_id: chainTicketId }),
+    );
     return this.decodeTicket(result);
   }
 
   async getEvent(chainEventId: bigint): Promise<OnChainEvent> {
-    const result = await this.simulateRead('get_event', [
-      nativeToScVal(chainEventId, { type: 'u64' }),
-    ]);
+    const result = await this.simulateRead(
+      'get_event',
+      contractArgs('get_event', { event_id: chainEventId }),
+    );
     return { eventId: chainEventId, ...this.decodeEvent(result) };
   }
 
@@ -252,15 +273,33 @@ export class StellarService {
     category: string;
     maxResaleMultiplierBps: number;
     royaltyBps: number;
+    startsAt: bigint;
+    transferFreezeSeconds?: bigint;
+    resaleCutoffSeconds?: bigint;
+    maxPerWallet?: number | null;
   }): Promise<string> {
-    return this.buildTx(params.organizerPublicKey, 'create_event', [
-      new Address(params.organizerPublicKey).toScVal(),
-      nativeToScVal(params.chainEventId, { type: 'u64' }),
-      nativeToScVal(params.name, { type: 'string' }),
-      nativeToScVal(params.category, { type: 'string' }),
-      nativeToScVal(params.maxResaleMultiplierBps, { type: 'u32' }),
-      nativeToScVal(params.royaltyBps, { type: 'u32' }),
-    ]);
+    const eventParams: EventParams = {
+      name: params.name,
+      category: params.category,
+      max_resale_multiplier_bps: params.maxResaleMultiplierBps,
+      royalty_bps: params.royaltyBps,
+      starts_at: params.startsAt,
+      transfer_freeze_seconds: params.transferFreezeSeconds ?? 0n,
+      resale_cutoff_seconds: params.resaleCutoffSeconds ?? 0n,
+      max_per_wallet: params.maxPerWallet ?? null,
+      refund_window_seconds: null,
+      presale_starts_at: null,
+      presale_ends_at: null,
+    };
+    return this.buildTx(
+      params.organizerPublicKey,
+      'create_event',
+      encodeCreateEvent({
+        organizer: params.organizerPublicKey,
+        eventId: params.chainEventId,
+        params: eventParams,
+      }),
+    );
   }
 
   buildIssueTicketTx(params: {
@@ -271,14 +310,18 @@ export class StellarService {
     seat: string;
     price: bigint;
   }): Promise<string> {
-    return this.buildTx(params.organizerPublicKey, 'issue_ticket', [
-      new Address(params.organizerPublicKey).toScVal(),
-      nativeToScVal(params.chainEventId, { type: 'u64' }),
-      new Address(params.toPublicKey).toScVal(),
-      nativeToScVal(params.tier, { type: 'string' }),
-      nativeToScVal(params.seat, { type: 'string' }),
-      nativeToScVal(params.price, { type: 'i128' }),
-    ]);
+    return this.buildTx(
+      params.organizerPublicKey,
+      'issue_ticket',
+      encodeIssueTicket({
+        organizer: params.organizerPublicKey,
+        eventId: params.chainEventId,
+        to: params.toPublicKey,
+        tier: params.tier,
+        seat: params.seat,
+        price: params.price,
+      }),
+    );
   }
 
   buildPurchasePrimaryTx(params: {
@@ -286,15 +329,17 @@ export class StellarService {
     chainEventId: bigint;
     tier: string;
     seat: string;
-    price: bigint;
   }): Promise<string> {
-    return this.buildTx(params.buyerPublicKey, 'purchase_primary', [
-      new Address(params.buyerPublicKey).toScVal(),
-      nativeToScVal(params.chainEventId, { type: 'u64' }),
-      nativeToScVal(params.tier, { type: 'string' }),
-      nativeToScVal(params.seat, { type: 'string' }),
-      nativeToScVal(params.price, { type: 'i128' }),
-    ]);
+    return this.buildTx(
+      params.buyerPublicKey,
+      'purchase_primary',
+      encodePurchasePrimary({
+        buyer: params.buyerPublicKey,
+        eventId: params.chainEventId,
+        tier: params.tier,
+        seat: params.seat,
+      }),
+    );
   }
 
   buildTransferTicketTx(params: {
@@ -302,31 +347,70 @@ export class StellarService {
     chainTicketId: bigint;
     toPublicKey: string;
   }): Promise<string> {
-    return this.buildTx(params.fromPublicKey, 'transfer_ticket', [
-      new Address(params.fromPublicKey).toScVal(),
-      nativeToScVal(params.chainTicketId, { type: 'u64' }),
-      new Address(params.toPublicKey).toScVal(),
-    ]);
+    return this.buildTx(
+      params.fromPublicKey,
+      'transfer_ticket',
+      encodeTransferTicket({
+        from: params.fromPublicKey,
+        ticketId: params.chainTicketId,
+        to: params.toPublicKey,
+      }),
+    );
   }
 
   buildCheckInTx(params: {
     organizerPublicKey: string;
     chainTicketId: bigint;
   }): Promise<string> {
-    return this.buildTx(params.organizerPublicKey, 'check_in', [
-      new Address(params.organizerPublicKey).toScVal(),
-      nativeToScVal(params.chainTicketId, { type: 'u64' }),
-    ]);
+    return this.buildTx(
+      params.organizerPublicKey,
+      'check_in',
+      encodeCheckIn({
+        organizer: params.organizerPublicKey,
+        ticketId: params.chainTicketId,
+      }),
+    );
   }
 
   buildRevokeTicketTx(params: {
     organizerPublicKey: string;
     chainTicketId: bigint;
   }): Promise<string> {
-    return this.buildTx(params.organizerPublicKey, 'revoke_ticket', [
-      new Address(params.organizerPublicKey).toScVal(),
-      nativeToScVal(params.chainTicketId, { type: 'u64' }),
-    ]);
+    return this.buildTx(
+      params.organizerPublicKey,
+      'revoke_ticket',
+      encodeRevokeTicket({
+        organizer: params.organizerPublicKey,
+        ticketId: params.chainTicketId,
+      }),
+    );
+  }
+
+  /**
+   * #499 — builds one `revoke_batch` envelope for at most
+   * `REVOKE_BATCH_CHUNK_SIZE` tickets. Callers split larger revocations into
+   * ordered chunks; the contract rejects bigger batches with `BatchTooLarge`.
+   */
+  async buildRevokeBatchTx(params: {
+    organizerPublicKey: string;
+    chainTicketIds: bigint[];
+  }): Promise<string> {
+    if (params.chainTicketIds.length === 0) {
+      throw new Error('Cannot build an empty revoke_batch transaction');
+    }
+    if (params.chainTicketIds.length > REVOKE_BATCH_CHUNK_SIZE) {
+      throw new Error(
+        `revoke_batch accepts at most ${REVOKE_BATCH_CHUNK_SIZE} tickets`,
+      );
+    }
+    return this.buildTx(
+      params.organizerPublicKey,
+      'revoke_batch',
+      encodeRevokeBatch({
+        organizer: params.organizerPublicKey,
+        ticketIds: params.chainTicketIds,
+      }),
+    );
   }
 
   buildListForResaleTx(params: {
@@ -334,31 +418,43 @@ export class StellarService {
     chainTicketId: bigint;
     price: bigint;
   }): Promise<string> {
-    return this.buildTx(params.ownerPublicKey, 'list_for_resale', [
-      new Address(params.ownerPublicKey).toScVal(),
-      nativeToScVal(params.chainTicketId, { type: 'u64' }),
-      nativeToScVal(params.price, { type: 'i128' }),
-    ]);
+    return this.buildTx(
+      params.ownerPublicKey,
+      'list_for_resale',
+      encodeListForResale({
+        owner: params.ownerPublicKey,
+        ticketId: params.chainTicketId,
+        price: params.price,
+      }),
+    );
   }
 
   buildCancelResaleTx(params: {
     ownerPublicKey: string;
     chainTicketId: bigint;
   }): Promise<string> {
-    return this.buildTx(params.ownerPublicKey, 'cancel_resale', [
-      new Address(params.ownerPublicKey).toScVal(),
-      nativeToScVal(params.chainTicketId, { type: 'u64' }),
-    ]);
+    return this.buildTx(
+      params.ownerPublicKey,
+      'cancel_resale',
+      encodeCancelResale({
+        owner: params.ownerPublicKey,
+        ticketId: params.chainTicketId,
+      }),
+    );
   }
 
   buildBuyResaleTx(params: {
     buyerPublicKey: string;
     chainTicketId: bigint;
   }): Promise<string> {
-    return this.buildTx(params.buyerPublicKey, 'buy_resale', [
-      new Address(params.buyerPublicKey).toScVal(),
-      nativeToScVal(params.chainTicketId, { type: 'u64' }),
-    ]);
+    return this.buildTx(
+      params.buyerPublicKey,
+      'buy_resale',
+      encodeBuyResale({
+        buyer: params.buyerPublicKey,
+        ticketId: params.chainTicketId,
+      }),
+    );
   }
 
   /**
@@ -584,7 +680,9 @@ export class StellarService {
         .build();
 
       // Issue #153: Simulate transaction before returning build payload
-      const sim = await this.rpcCall(() => this.server.simulateTransaction(built));
+      const sim = await this.rpcCall(() =>
+        this.server.simulateTransaction(built),
+      );
       if (rpc.Api.isSimulationError(sim)) {
         throw mapSorobanErrorToApiException(sim.error);
       }
@@ -635,7 +733,8 @@ export class StellarService {
         : (payload as { ticket_id?: unknown } | null)?.ticket_id;
     return {
       id: event.id,
-      pagingToken: event.pagingToken,
+      pagingToken:
+        (event as unknown as { pagingToken?: string }).pagingToken ?? event.id,
       ledger: event.ledger,
       name,
       chainTicketId: typeof raw === 'bigint' ? raw : null,

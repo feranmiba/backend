@@ -34,6 +34,7 @@ import { UpdateResalePriceDto } from './dto/update-resale-price.dto';
 import { ResaleListingsQueryDto } from './dto/resale-listings-query.dto';
 import { MyTicketsQueryDto } from './dto/my-tickets-query.dto';
 import { RevokeBatchDto } from './dto/revoke-batch.dto';
+import { ConfirmRevokeBatchDto } from './dto/confirm-revoke-batch.dto';
 import { IssueBatchDto } from './dto/issue-batch.dto';
 
 /** Largest on-chain ticket id: the contract stores ids as u64. */
@@ -294,12 +295,31 @@ export class TicketsController {
   }
 
   @Post('events/:eventId/revoke-batch')
-  revokeBatch(
+  @UseInterceptors(IdempotencyInterceptor)
+  buildRevokeBatch(
     @CurrentUser() user: CurrentUserPayload,
     @Param('eventId') eventId: string,
     @Body() dto: RevokeBatchDto,
   ) {
-    return this.ticketsService.revokeBatch(user.userId, eventId, dto.ticketIds);
+    return this.ticketsService.buildRevokeBatch(
+      user.userId,
+      eventId,
+      dto.ticketIds,
+    );
+  }
+
+  @Post('events/:eventId/confirm-revoke-batch')
+  confirmRevokeBatch(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param('eventId') eventId: string,
+    @Body() dto: ConfirmRevokeBatchDto,
+  ) {
+    return this.ticketsService.confirmRevokeBatch(
+      user.userId,
+      eventId,
+      dto.ticketIds,
+      dto.signedXdrs,
+    );
   }
 
   @Post(':ticketId/list-resale')
