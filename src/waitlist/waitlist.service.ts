@@ -3,12 +3,14 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
 import { WaitlistEntryStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { OrganizationsService } from '../organizations/organizations.service';
+import { NotificationService } from '../notifications/notifications.service';
 
 /** Cadence for checking and rolling forward expired waitlist offers (every 60 seconds). */
 export const WAITLIST_EXPIRY_CHECK_INTERVAL_MS = 60_000;
@@ -21,6 +23,7 @@ export class WaitlistService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly organizations: OrganizationsService,
+    @Optional() private readonly notifications?: NotificationService,
   ) {}
 
   onModuleInit() {
@@ -241,6 +244,7 @@ export class WaitlistService implements OnModuleInit, OnModuleDestroy {
       where: { ticketTypeId, status: WaitlistEntryStatus.WAITING },
       orderBy: { createdAt: 'asc' },
       take: count,
+      include: { user: true },
     });
 
     const now = new Date();
@@ -253,7 +257,32 @@ export class WaitlistService implements OnModuleInit, OnModuleDestroy {
         offerExpiresAt,
       },
     });
-    return next.map((e) => ({ ...e, status: WaitlistEntryStatus.OFFERED }));
+
+    // #561 — Send email notifications to waitlist users who received offers
+    if (this.notifications) {
+      for (const entry of next) {
+        this.notifications
+          .sendWaitlistOffer({
+            to: entry.user.email,
+            userName: entry.user.name,
+            eventName: ticketType.event.name,
+            ticketType: ticketType.name,
+            expiresAt: offerExpiresAt,
+          })
+          .catch((err) => {
+            // Fire and forget: log failures but don't block the offer
+            console.error(
+              `Failed to send waitlist offer email to ${entry.user.email}: ${err.message}`,
+            );
+          });
+      }
+    }
+
+    return next.map((e) => ({
+      ...e,
+      status: WaitlistEntryStatus.OFFERED,
+      user: undefined,
+    }));
   }
 
   /** Marks an OFFERED entry CONVERTED once the offered user actually buys. */
