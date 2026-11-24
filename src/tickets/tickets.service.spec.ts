@@ -24,6 +24,7 @@ import type { StellarService } from '../stellar/stellar.service';
 import type { OfflineTokenService } from './offline-token.service';
 import type { QrTokenService } from './qr-token.service';
 import type { ConfigService } from '@nestjs/config';
+import type { WaitlistService } from '../waitlist/waitlist.service';
 import {
   createEvent,
   createOrganization,
@@ -135,6 +136,7 @@ describe('TicketsService', () => {
       buildTransferTicketTx: jest.fn().mockResolvedValue('unsigned-xdr'),
       buildCheckInTx: jest.fn().mockResolvedValue('unsigned-xdr'),
       buildRevokeTicketTx: jest.fn().mockResolvedValue('unsigned-xdr'),
+      buildRevokeBatchTx: jest.fn().mockResolvedValue('unsigned-xdr'),
       buildListForResaleTx: jest.fn().mockResolvedValue('unsigned-xdr'),
       buildCancelResaleTx: jest.fn().mockResolvedValue('unsigned-xdr'),
       buildBuyResaleTx: jest.fn().mockResolvedValue('unsigned-xdr'),
@@ -422,7 +424,6 @@ describe('TicketsService', () => {
         chainEventId: 42n,
         tier: 'GA',
         seat: UNASSIGNED_SEAT,
-        price: 1_000n,
       });
     });
   });
@@ -689,6 +690,36 @@ describe('TicketsService', () => {
       await expect(
         service.confirmPurchase('buyer-1', 'tt-1', undefined, 'signed-xdr'),
       ).resolves.toMatchObject({ seat: 'unassigned' });
+    });
+
+    it('marks waitlist entry CONVERTED on purchase if waitlist service is provided', async () => {
+      mockSignedCall('purchase_primary', ['GBUYER', 42n, 'GA', 'A1', 1_000n]);
+      const waitlist = {
+        markConverted: jest.fn().mockResolvedValue(undefined),
+      };
+      const serviceWithWaitlist = new TicketsService(
+        prisma as unknown as PrismaService,
+        organizations as unknown as OrganizationsService,
+        stellar as unknown as StellarService,
+        undefined,
+        offlineTokens as unknown as OfflineTokenService,
+        config as unknown as ConfigService,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        qrTokens as unknown as QrTokenService,
+        waitlist as unknown as WaitlistService,
+      );
+
+      await serviceWithWaitlist.confirmPurchase(
+        'buyer-1',
+        'tt-1',
+        'A1',
+        'signed-xdr',
+      );
+
+      expect(waitlist.markConverted).toHaveBeenCalledWith('tt-1', 'buyer-1');
     });
   });
 
@@ -2064,68 +2095,131 @@ describe('TicketsService', () => {
 
   // ---- Bulk revoke (#267) ----
 
-  describe('revokeBatch', () => {
-    it('revokes a batch of tickets', async () => {
+  describe('buildRevokeBatch / confirmRevokeBatch (#499, #500)', () => {
+    const ticketIds = (count: number) =>
+      Array.from({ length: count }, (_, i) => `ticket-${i + 1}`);
+
+    function mockBatch(ids: string[]) {
       prisma.event.findUnique.mockResolvedValue({
         id: 'event-1',
         organizationId: 'org-1',
+        status: 'PUBLISHED',
+        chainEventId: 42n,
         organization: { stellarAccount: 'GORGANIZER' },
       });
-      prisma.ticket.findMany.mockResolvedValue([
-        { id: 'ticket-1', eventId: 'event-1' },
-        { id: 'ticket-2', eventId: 'event-1' },
-      ]);
-      prisma.ticket.updateMany.mockResolvedValue({ count: 2 });
-
-      const result = await service.revokeBatch('user-1', 'event-1', [
-        'ticket-1',
-        'ticket-2',
-      ]);
-
-      expect(result.count).toBe(2);
-      expect(prisma.ticket.updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: { in: ['ticket-1', 'ticket-2'] } },
-          data: { status: 'REVOKED' },
-        }),
+      prisma.ticket.findMany.mockResolvedValue(
+        ids.map((id, i) => ({
+          id,
+          eventId: 'event-1',
+          chainTicketId: BigInt(i + 1),
+        })),
       );
+    }
+
+    it('builds one revoke_batch envelope per 35-ticket chunk', async () => {
+      const ids = ticketIds(36);
+      mockBatch(ids);
+      stellar.buildRevokeBatchTx
+        .mockResolvedValueOnce('xdr-1')
+        .mockResolvedValueOnce('xdr-2');
+
+      const result = await service.buildRevokeBatch('user-1', 'event-1', ids);
+
+      expect(result).toEqual({
+        unsignedXdrs: ['xdr-1', 'xdr-2'],
+        chunkSize: 35,
+      });
+      expect(stellar.buildRevokeBatchTx).toHaveBeenNthCalledWith(1, {
+        organizerPublicKey: 'GORGANIZER',
+        chainTicketIds: Array.from({ length: 35 }, (_, i) => BigInt(i + 1)),
+      });
+      expect(stellar.buildRevokeBatchTx).toHaveBeenNthCalledWith(2, {
+        organizerPublicKey: 'GORGANIZER',
+        chainTicketIds: [36n],
+      });
     });
 
-    it('rejects batch exceeding max size', async () => {
-      const ticketIds = Array.from({ length: 101 }, (_, i) => `ticket-${i}`);
+    it('submits all chunks before revoking tickets and cancelling listings', async () => {
+      const ids = ticketIds(2);
+      mockBatch(ids);
+      mockSignedCall('revoke_batch', ['GORGANIZER', [1n, 2n]]);
+      prisma.ticket.updateMany.mockResolvedValue({ count: 2 });
+      prisma.resaleListing.updateMany.mockResolvedValue({ count: 1 });
+
+      const result = await service.confirmRevokeBatch(
+        'user-1',
+        'event-1',
+        ids,
+        ['signed-1'],
+      );
+
+      expect(result.count).toBe(2);
+      expect(stellar.submitSignedTransaction).toHaveBeenCalledTimes(1);
+      expect(prisma.ticket.updateMany).toHaveBeenCalledWith({
+        where: { id: { in: ids }, eventId: 'event-1' },
+        data: { status: 'REVOKED' },
+      });
+      expect(prisma.resaleListing.updateMany).toHaveBeenCalledWith({
+        where: { ticketId: { in: ids }, status: 'ACTIVE' },
+        data: { status: 'CANCELLED' },
+      });
+      expect(prisma.processedTx.create).toHaveBeenCalledTimes(1);
+      const [processedTxArgs] = prisma.processedTx.create.mock.calls[0] as [
+        { data: { txHash: string } },
+      ];
+      expect(processedTxArgs.data.txHash).toBe('hash-1');
+    });
+
+    it('rejects a signed chunk that does not match the request before submitting', async () => {
+      const ids = ticketIds(2);
+      mockBatch(ids);
+      mockSignedCall('revoke_batch', ['GORGANIZER', [1n, 99n]]);
 
       await expect(
-        service.revokeBatch('user-1', 'event-1', ticketIds),
+        service.confirmRevokeBatch('user-1', 'event-1', ids, ['signed-1']),
       ).rejects.toBeInstanceOf(BadRequestException);
+      expect(stellar.submitSignedTransaction).not.toHaveBeenCalled();
+      expect(prisma.ticket.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('leaves the DB untouched when a signed submission fails', async () => {
+      const ids = ticketIds(2);
+      mockBatch(ids);
+      mockSignedCall('revoke_batch', ['GORGANIZER', [1n, 2n]]);
+      stellar.submitSignedTransaction.mockRejectedValueOnce(
+        new Error('RPC unavailable'),
+      );
+
+      await expect(
+        service.confirmRevokeBatch('user-1', 'event-1', ids, ['signed-1']),
+      ).rejects.toThrow('RPC unavailable');
+      expect(prisma.ticket.updateMany).not.toHaveBeenCalled();
+      expect(prisma.resaleListing.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects a batch exceeding max size', async () => {
+      await expect(
+        service.buildRevokeBatch('user-1', 'event-1', ticketIds(101)),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(stellar.buildRevokeBatchTx).not.toHaveBeenCalled();
     });
 
     it('rejects when user is not an organization member', async () => {
-      prisma.event.findUnique.mockResolvedValue({
-        id: 'event-1',
-        organizationId: 'org-1',
-        organization: { stellarAccount: 'GORGANIZER' },
-      });
+      mockBatch(ticketIds(1));
       organizations.assertMember.mockRejectedValue(
         new ForbiddenException('Not a member'),
       );
 
       await expect(
-        service.revokeBatch('user-1', 'event-1', ['ticket-1']),
+        service.buildRevokeBatch('user-1', 'event-1', ticketIds(1)),
       ).rejects.toBeInstanceOf(ForbiddenException);
     });
 
     it('rejects when some tickets are not found', async () => {
-      prisma.event.findUnique.mockResolvedValue({
-        id: 'event-1',
-        organizationId: 'org-1',
-        organization: { stellarAccount: 'GORGANIZER' },
-      });
-      prisma.ticket.findMany.mockResolvedValue([
-        { id: 'ticket-1', eventId: 'event-1' },
-      ]);
+      mockBatch(ticketIds(1));
 
       await expect(
-        service.revokeBatch('user-1', 'event-1', ['ticket-1', 'ticket-2']),
+        service.buildRevokeBatch('user-1', 'event-1', ticketIds(2)),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
   });

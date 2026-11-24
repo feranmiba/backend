@@ -1341,11 +1341,13 @@ curl -s -X POST "$API/v1/tickets/6f0a2c4e-8b1d-4f3a-9e5c-7d8e9f0a1b2c/confirm-re
 
 #### `POST /v1/tickets/events/:eventId/revoke-batch`
 
-Off-chain bulk revoke for fraud response.
+Builds the unsigned `revoke_batch` envelopes for an on-chain bulk revoke
+(fraud response). The request is idempotent: repeating it returns the same
+payload.
 
 | field | type | rules |
 |---|---|---|
-| `ticketIds` | string[] | required, up to 100 ids of at most 100 characters each, all on this event |
+| `ticketIds` | string[] | required, 1–100 ids of at most 100 characters each, all on this event |
 
 ```bash
 curl -s -X POST "$API/v1/tickets/events/7a1f3c5e-9b2d-4e6f-8a0c-1d2e3f4a5b6c/revoke-batch" \
@@ -1353,11 +1355,42 @@ curl -s -X POST "$API/v1/tickets/events/7a1f3c5e-9b2d-4e6f-8a0c-1d2e3f4a5b6c/rev
   -d '{"ticketIds":["6f0a2c4e-8b1d-4f3a-9e5c-7d8e9f0a1b2c","0d1e2f3a-4b5c-4d6e-8f7a-8b9c0d1e2f3a"]}'
 ```
 
+Returns one envelope per 35 tickets, in the same order as the chunks:
+
+```json
+{ "unsignedXdrs": ["AAAAAgAA...", "AAAAAgAA..."], "chunkSize": 35 }
+```
+
+The contract's `MAX_BATCH_SIZE` is 35, so 36–100 tickets produce two or three
+envelopes. Each envelope must be signed by the organizer and sent to the
+confirm endpoint below.
+
+#### `POST /v1/tickets/events/:eventId/confirm-revoke-batch`
+
+Submits every signed `revoke_batch` envelope and then atomically revokes the
+tickets, cancels their `ACTIVE` resale listings, and records the processed
+transactions.
+
+| field | type | rules |
+|---|---|---|
+| `ticketIds` | string[] | same ids, in the same order, as the build request |
+| `signedXdrs` | string[] | one signed envelope per built chunk, in chunk order |
+
+```bash
+curl -s -X POST "$API/v1/tickets/events/7a1f3c5e-9b2d-4e6f-8a0c-1d2e3f4a5b6c/confirm-revoke-batch" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"ticketIds":["6f0a2c4e-8b1d-4f3a-9e5c-7d8e9f0a1b2c","0d1e2f3a-4b5c-4d6e-8f7a-8b9c0d1e2f3a"],"signedXdrs":["AAAAAgAA..."]}'
+```
+
 ```json
 { "count": 2 }
 ```
 
-`400` when any id is missing from the event or more than 100 are sent.
+`400` when any id is missing from the event, more than 100 are sent, the
+number of signed envelopes does not match the chunk count, or a signed
+envelope does not match its expected chunk. `409` when only some envelopes
+were already confirmed. No database rows are written until every envelope
+has been submitted successfully.
 
 ### Resale
 
@@ -1563,6 +1596,56 @@ curl -s -X POST "$API/v1/tickets/resale/cancel-expired" -H "Authorization: Beare
 
 ```json
 { "cancelledCount": 3 }
+```
+
+## Refunds
+
+Admin-only endpoints (`PLATFORM_ADMIN`) for tracking off-chain refunds of primary ticket sales. See [`docs/REFUNDS.md`](REFUNDS.md) for full eligibility rules and lifecycle details.
+
+### Refund Rules
+
+- **REVOKED tickets**: Allowed.
+- **Cancelled events**: Allowed for unused tickets belonging to an event with status `CANCELLED`.
+- **Refund window**: Allowed for `VALID` tickets when the event has not started yet (`now < event.startsAt`).
+- **Ineligible**: `USED` tickets, tickets with an existing refund record, or requests after the event start time are rejected.
+
+### `POST /v1/refunds`
+
+Creates a `PENDING` refund record for an eligible ticket.
+
+```bash
+curl -s -X POST "$API/v1/refunds" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"ticketId":"6f0a2c4e-8b1d-4f3a-9e5c-7d8e9f0a1b2c"}'
+```
+
+```json
+{
+  "id": "e4a2d3c1-0b5e-4f7a-8c9d-1e2f3a4b5c6d",
+  "ticketId": "6f0a2c4e-8b1d-4f3a-9e5c-7d8e9f0a1b2c",
+  "status": "PENDING",
+  "createdAt": "2026-11-23T20:00:00.000Z",
+  "completedAt": null
+}
+```
+
+### `PATCH /v1/refunds/:id/complete`
+
+Marks an existing refund as `COMPLETED`.
+
+```bash
+curl -s -X PATCH "$API/v1/refunds/e4a2d3c1-0b5e-4f7a-8c9d-1e2f3a4b5c6d/complete" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "id": "e4a2d3c1-0b5e-4f7a-8c9d-1e2f3a4b5c6d",
+  "ticketId": "6f0a2c4e-8b1d-4f3a-9e5c-7d8e9f0a1b2c",
+  "status": "COMPLETED",
+  "createdAt": "2026-11-23T20:00:00.000Z",
+  "completedAt": "2026-11-23T20:05:00.000Z"
+}
 ```
 
 ## Stellar

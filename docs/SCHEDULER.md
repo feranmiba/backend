@@ -46,8 +46,9 @@ The flag is read from the environment when the app module is built, not from
 `ConfigModule.forRoot()` in `AppModule` (that call is what loads `.env`).
 
 It covers jobs registered through `SchedulerModule`. The pending-transaction
-cleanup (`src/pending-tx/`) and event reminders (`src/events/`) run on their own
-`setInterval` timers and are not affected.
+cleanup (`src/pending-tx/`), event reminders (`src/events/`), resale expiry
+(`src/tickets/`), and waitlist offer expiration roll-forward (`src/waitlist/`)
+run on their own `setInterval` timers and are not affected.
 
 ## Ticket status reconciliation
 

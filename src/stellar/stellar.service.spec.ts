@@ -66,25 +66,28 @@ describe('StellarService (contract-mock harness)', () => {
             category: 'CONCERTS',
             maxResaleMultiplierBps: 11_000,
             royaltyBps: 500,
+            startsAt: 100n,
           }),
         source: ORGANIZER,
         fn: 'create_event',
         args: [
           ORGANIZER,
           CHAIN_EVENT_ID,
-          'Launch Night',
-          'CONCERTS',
-          11_000,
-          500,
+          {
+            name: 'Launch Night',
+            category: 'CONCERTS',
+            max_resale_multiplier_bps: 11_000,
+            royalty_bps: 500,
+            starts_at: 100n,
+            transfer_freeze_seconds: 0n,
+            resale_cutoff_seconds: 0n,
+            max_per_wallet: null,
+            refund_window_seconds: null,
+            presale_starts_at: null,
+            presale_ends_at: null,
+          },
         ],
-        argTypes: [
-          'scvAddress',
-          'scvU64',
-          'scvString',
-          'scvString',
-          'scvU32',
-          'scvU32',
-        ],
+        argTypes: ['scvAddress', 'scvU64', 'scvMap'],
       },
       {
         method: 'buildIssueTicketTx',
@@ -117,12 +120,11 @@ describe('StellarService (contract-mock harness)', () => {
             chainEventId: CHAIN_EVENT_ID,
             tier: 'GA',
             seat: 'unassigned',
-            price: 2_500_000n,
           }),
         source: BUYER,
         fn: 'purchase_primary',
-        args: [BUYER, CHAIN_EVENT_ID, 'GA', 'unassigned', 2_500_000n],
-        argTypes: ['scvAddress', 'scvU64', 'scvString', 'scvString', 'scvI128'],
+        args: [BUYER, CHAIN_EVENT_ID, 'GA', 'unassigned'],
+        argTypes: ['scvAddress', 'scvU64', 'scvString', 'scvString'],
       },
       {
         method: 'buildTransferTicketTx',
@@ -160,6 +162,18 @@ describe('StellarService (contract-mock harness)', () => {
         fn: 'revoke_ticket',
         args: [ORGANIZER, CHAIN_TICKET_ID],
         argTypes: ['scvAddress', 'scvU64'],
+      },
+      {
+        method: 'buildRevokeBatchTx',
+        build: (s) =>
+          s.buildRevokeBatchTx({
+            organizerPublicKey: ORGANIZER,
+            chainTicketIds: [CHAIN_TICKET_ID, 8n],
+          }),
+        source: ORGANIZER,
+        fn: 'revoke_batch',
+        args: [ORGANIZER, [CHAIN_TICKET_ID, 8n]],
+        argTypes: ['scvAddress', 'scvVec'],
       },
       {
         method: 'buildListForResaleTx',
@@ -222,6 +236,16 @@ describe('StellarService (contract-mock harness)', () => {
         expect(server.prepareTransaction).toHaveBeenCalledTimes(1);
       },
     );
+
+    it('rejects a revoke_batch envelope larger than the contract limit', async () => {
+      const { service } = createStellarHarness();
+      await expect(
+        service.buildRevokeBatchTx({
+          organizerPublicKey: ORGANIZER,
+          chainTicketIds: Array.from({ length: 36 }, (_, i) => BigInt(i)),
+        }),
+      ).rejects.toThrow(/at most 35/);
+    });
 
     it('returns the envelope prepareTransaction produced, not the pre-simulation one', async () => {
       const { service, server } = createStellarHarness();
