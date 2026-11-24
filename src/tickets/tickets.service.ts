@@ -37,6 +37,7 @@ import { QrTokenService } from './qr-token.service';
 import { PromoCodesService } from '../promo-codes/promo-codes.service';
 import { GatesService } from '../gates/gates.service';
 import { FeatureFlagsService } from '../config/feature-flags.service';
+import { WaitlistService } from '../waitlist/waitlist.service';
 
 /** How long an offline-verifiable token stays valid before a scanner must re-verify online. */
 const OFFLINE_TOKEN_TTL_SECONDS = 12 * 60 * 60;
@@ -69,6 +70,7 @@ export class TicketsService {
     @Optional() private readonly audit?: AuditService,
     @Optional() private readonly featureFlags?: FeatureFlagsService,
     @Optional() private readonly qrTokens?: QrTokenService,
+    @Optional() private readonly waitlist?: WaitlistService,
   ) {}
 
   // ---- Organizer-authorized issuance (off-chain payment already settled) ----
@@ -364,6 +366,9 @@ export class TicketsService {
     }
     if (promoCode) {
       await this.promoCodes!.redeem(event.id, buyerId, promoCode, ticket.id);
+    }
+    if (this.waitlist) {
+      await this.waitlist.markConverted(ticketTypeId, buyerId);
     }
     if (this.notifications) {
       await this.notifications.sendTicketReceipt({

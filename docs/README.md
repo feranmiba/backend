@@ -17,6 +17,7 @@
 - [WEBHOOKS.md](WEBHOOKS.md) — optional BullMQ queue for outbound webhooks
 - [SCHEDULER.md](SCHEDULER.md) — cron jobs and the `SCHEDULER_ENABLED` switch
 - [RESALE_EXPIRY.md](RESALE_EXPIRY.md) — resale listing expiry, the listing cap, price history and its limitations
+- [REFUNDS.md](REFUNDS.md) — primary-sale refund rules, eligibility, and completion lifecycle
 - [../ROADMAP.md](../ROADMAP.md) — status of planned and shipped features
 - [CORS.md](CORS.md) — allowed origins
 - [CONFIGURATION.md](CONFIGURATION.md) — environment variables

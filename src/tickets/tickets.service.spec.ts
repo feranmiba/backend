@@ -24,6 +24,7 @@ import type { StellarService } from '../stellar/stellar.service';
 import type { OfflineTokenService } from './offline-token.service';
 import type { QrTokenService } from './qr-token.service';
 import type { ConfigService } from '@nestjs/config';
+import type { WaitlistService } from '../waitlist/waitlist.service';
 import {
   createEvent,
   createOrganization,
@@ -688,6 +689,36 @@ describe('TicketsService', () => {
       await expect(
         service.confirmPurchase('buyer-1', 'tt-1', undefined, 'signed-xdr'),
       ).resolves.toMatchObject({ seat: 'unassigned' });
+    });
+
+    it('marks waitlist entry CONVERTED on purchase if waitlist service is provided', async () => {
+      mockSignedCall('purchase_primary', ['GBUYER', 42n, 'GA', 'A1', 1_000n]);
+      const waitlist = {
+        markConverted: jest.fn().mockResolvedValue(undefined),
+      };
+      const serviceWithWaitlist = new TicketsService(
+        prisma as unknown as PrismaService,
+        organizations as unknown as OrganizationsService,
+        stellar as unknown as StellarService,
+        undefined,
+        offlineTokens as unknown as OfflineTokenService,
+        config as unknown as ConfigService,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        qrTokens as unknown as QrTokenService,
+        waitlist as unknown as WaitlistService,
+      );
+
+      await serviceWithWaitlist.confirmPurchase(
+        'buyer-1',
+        'tt-1',
+        'A1',
+        'signed-xdr',
+      );
+
+      expect(waitlist.markConverted).toHaveBeenCalledWith('tt-1', 'buyer-1');
     });
   });
 
