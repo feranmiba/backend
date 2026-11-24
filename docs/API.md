@@ -1549,6 +1549,56 @@ curl -s -X POST "$API/v1/tickets/resale/cancel-expired" -H "Authorization: Beare
 { "cancelledCount": 3 }
 ```
 
+## Refunds
+
+Admin-only endpoints (`PLATFORM_ADMIN`) for tracking off-chain refunds of primary ticket sales. See [`docs/REFUNDS.md`](REFUNDS.md) for full eligibility rules and lifecycle details.
+
+### Refund Rules
+
+- **REVOKED tickets**: Allowed.
+- **Cancelled events**: Allowed for unused tickets belonging to an event with status `CANCELLED`.
+- **Refund window**: Allowed for `VALID` tickets when the event has not started yet (`now < event.startsAt`).
+- **Ineligible**: `USED` tickets, tickets with an existing refund record, or requests after the event start time are rejected.
+
+### `POST /v1/refunds`
+
+Creates a `PENDING` refund record for an eligible ticket.
+
+```bash
+curl -s -X POST "$API/v1/refunds" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"ticketId":"6f0a2c4e-8b1d-4f3a-9e5c-7d8e9f0a1b2c"}'
+```
+
+```json
+{
+  "id": "e4a2d3c1-0b5e-4f7a-8c9d-1e2f3a4b5c6d",
+  "ticketId": "6f0a2c4e-8b1d-4f3a-9e5c-7d8e9f0a1b2c",
+  "status": "PENDING",
+  "createdAt": "2026-11-23T20:00:00.000Z",
+  "completedAt": null
+}
+```
+
+### `PATCH /v1/refunds/:id/complete`
+
+Marks an existing refund as `COMPLETED`.
+
+```bash
+curl -s -X PATCH "$API/v1/refunds/e4a2d3c1-0b5e-4f7a-8c9d-1e2f3a4b5c6d/complete" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "id": "e4a2d3c1-0b5e-4f7a-8c9d-1e2f3a4b5c6d",
+  "ticketId": "6f0a2c4e-8b1d-4f3a-9e5c-7d8e9f0a1b2c",
+  "status": "COMPLETED",
+  "createdAt": "2026-11-23T20:00:00.000Z",
+  "completedAt": "2026-11-23T20:05:00.000Z"
+}
+```
+
 ## Stellar
 
 ### `GET /v1/stellar/circuit-breaker/metrics`

@@ -24,6 +24,7 @@ import type { StellarService } from '../stellar/stellar.service';
 import type { OfflineTokenService } from './offline-token.service';
 import type { QrTokenService } from './qr-token.service';
 import type { ConfigService } from '@nestjs/config';
+import type { WaitlistService } from '../waitlist/waitlist.service';
 import {
   createEvent,
   createOrganization,
@@ -689,6 +690,36 @@ describe('TicketsService', () => {
         service.confirmPurchase('buyer-1', 'tt-1', undefined, 'signed-xdr'),
       ).resolves.toMatchObject({ seat: 'unassigned' });
     });
+
+    it('marks waitlist entry CONVERTED on purchase if waitlist service is provided', async () => {
+      mockSignedCall('purchase_primary', ['GBUYER', 42n, 'GA', 'A1', 1_000n]);
+      const waitlist = {
+        markConverted: jest.fn().mockResolvedValue(undefined),
+      };
+      const serviceWithWaitlist = new TicketsService(
+        prisma as unknown as PrismaService,
+        organizations as unknown as OrganizationsService,
+        stellar as unknown as StellarService,
+        undefined,
+        offlineTokens as unknown as OfflineTokenService,
+        config as unknown as ConfigService,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        qrTokens as unknown as QrTokenService,
+        waitlist as unknown as WaitlistService,
+      );
+
+      await serviceWithWaitlist.confirmPurchase(
+        'buyer-1',
+        'tt-1',
+        'A1',
+        'signed-xdr',
+      );
+
+      expect(waitlist.markConverted).toHaveBeenCalledWith('tt-1', 'buyer-1');
+    });
   });
 
   describe('transfer', () => {
@@ -959,7 +990,10 @@ describe('TicketsService', () => {
         chainTicketId: 7n,
         status: 'VALID',
         chainTicketId: 7n,
-        event: { organizationId: 'org-1', organization: { stellarAccount: 'GORG' } },
+        event: {
+          organizationId: 'org-1',
+          organization: { stellarAccount: 'GORG' },
+        },
       });
 
       const token = await service.getOfflineToken('staff-1', 'ticket-1');
@@ -995,7 +1029,10 @@ describe('TicketsService', () => {
         chainTicketId: 7n,
         status: 'VALID',
         chainTicketId: 7n,
-        event: { organizationId: 'org-1', organization: { stellarAccount: 'GORG' } },
+        event: {
+          organizationId: 'org-1',
+          organization: { stellarAccount: 'GORG' },
+        },
       });
       organizations.assertMember.mockRejectedValueOnce(
         new ForbiddenException('You are not a member of this organization'),
@@ -2227,7 +2264,10 @@ describe('TicketsService', () => {
         eventId: 'event-1',
         ownerId: 'owner-1',
         chainTicketId: 7n,
-        event: { organizationId: 'org-1', organization: { stellarAccount: 'GORG' } },
+        event: {
+          organizationId: 'org-1',
+          organization: { stellarAccount: 'GORG' },
+        },
       });
 
       await expect(
@@ -2244,7 +2284,10 @@ describe('TicketsService', () => {
         eventId: 'event-1',
         ownerId: 'owner-1',
         chainTicketId: 7n,
-        event: { organizationId: 'org-1', organization: { stellarAccount: 'GORG' } },
+        event: {
+          organizationId: 'org-1',
+          organization: { stellarAccount: 'GORG' },
+        },
       });
 
       await expect(
@@ -2296,7 +2339,10 @@ describe('TicketsService', () => {
       eventId: 'event-1',
       ownerId: 'owner-1',
       chainTicketId: 7n,
-      event: { organizationId: 'org-1', organization: { stellarAccount: 'GORG' } },
+      event: {
+        organizationId: 'org-1',
+        organization: { stellarAccount: 'GORG' },
+      },
     };
 
     it('returns the stored response without re-submitting or re-writing', async () => {
@@ -2308,7 +2354,11 @@ describe('TicketsService', () => {
       });
       prisma.ticket.findUnique.mockResolvedValue(ticketRow);
 
-      const result = await service.confirmCheckIn('user-1', 'ticket-1', 'signed-xdr');
+      const result = await service.confirmCheckIn(
+        'user-1',
+        'ticket-1',
+        'signed-xdr',
+      );
 
       expect(result).toEqual(stored);
       expect(prisma.processedTx.findUnique).toHaveBeenCalledWith({
@@ -2346,7 +2396,10 @@ describe('TicketsService', () => {
         eventId: 'event-1',
         ownerId: 'owner-1',
         chainTicketId: 7n,
-        event: { organizationId: 'org-1', organization: { stellarAccount: 'GORG' } },
+        event: {
+          organizationId: 'org-1',
+          organization: { stellarAccount: 'GORG' },
+        },
       });
       prisma.ticket.update.mockResolvedValue({
         id: 'ticket-1',
@@ -2376,7 +2429,10 @@ describe('TicketsService', () => {
         eventId: 'event-1',
         ownerId: 'owner-1',
         chainTicketId: 7n,
-        event: { organizationId: 'org-1', organization: { stellarAccount: 'GORG' } },
+        event: {
+          organizationId: 'org-1',
+          organization: { stellarAccount: 'GORG' },
+        },
       });
       prisma.ticket.update.mockResolvedValue({
         id: 'ticket-1',

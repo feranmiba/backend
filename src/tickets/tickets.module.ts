@@ -14,6 +14,7 @@ import { PromoCodesModule } from '../promo-codes/promo-codes.module';
 import { GatesModule } from '../gates/gates.module';
 import { RateLimitModule } from '../common/rate-limit/rate-limit.module';
 import { JwtSecretModule } from '../auth/jwt-secret.module';
+import { WaitlistModule } from '../waitlist/waitlist.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { JwtSecretModule } from '../auth/jwt-secret.module';
     GatesModule,
     RateLimitModule,
     JwtSecretModule,
+    WaitlistModule,
   ],
   controllers: [TicketsController],
   providers: [

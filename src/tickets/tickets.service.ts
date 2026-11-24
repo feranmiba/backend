@@ -36,6 +36,7 @@ import { QrTokenService } from './qr-token.service';
 import { PromoCodesService } from '../promo-codes/promo-codes.service';
 import { GatesService } from '../gates/gates.service';
 import { FeatureFlagsService } from '../config/feature-flags.service';
+import { WaitlistService } from '../waitlist/waitlist.service';
 
 /** How long an offline-verifiable token stays valid before a scanner must re-verify online. */
 const OFFLINE_TOKEN_TTL_SECONDS = 12 * 60 * 60;
@@ -68,6 +69,7 @@ export class TicketsService {
     @Optional() private readonly audit?: AuditService,
     @Optional() private readonly featureFlags?: FeatureFlagsService,
     @Optional() private readonly qrTokens?: QrTokenService,
+    @Optional() private readonly waitlist?: WaitlistService,
   ) {}
 
   // ---- Organizer-authorized issuance (off-chain payment already settled) ----
@@ -187,8 +189,7 @@ export class TicketsService {
     ticketTypeId: string,
     recipients: Array<{ toUserId: string; toPublicKey: string; seat?: string }>,
   ) {
-    const maxBatchSize =
-      this.config?.get<number>('ISSUE_BATCH_MAX_SIZE') ?? 50;
+    const maxBatchSize = this.config?.get<number>('ISSUE_BATCH_MAX_SIZE') ?? 50;
     if (recipients.length > maxBatchSize) {
       throw new BadRequestException(
         `Batch size exceeds the maximum of ${maxBatchSize} recipients`,
@@ -326,8 +327,10 @@ export class TicketsService {
     ]);
     // #211 — fail fast on duplicate assigned seats before touching the chain.
     await this.assertSeatAvailable(event.id, seat);
-    const { result, txHash } =
-      await this.stellar.submitSignedTransaction(signedXdr, this.attendeeSubmitOptions());
+    const { result, txHash } = await this.stellar.submitSignedTransaction(
+      signedXdr,
+      this.attendeeSubmitOptions(),
+    );
     const chainTicketId = result as bigint;
 
     let ticket;
@@ -363,6 +366,9 @@ export class TicketsService {
     }
     if (promoCode) {
       await this.promoCodes!.redeem(event.id, buyerId, promoCode, ticket.id);
+    }
+    if (this.waitlist) {
+      await this.waitlist.markConverted(ticketTypeId, buyerId);
     }
     if (this.notifications) {
       await this.notifications.sendTicketReceipt({
@@ -415,7 +421,10 @@ export class TicketsService {
       ['ticket', 1, ticket.chainTicketId],
       ['recipient', 2, toUser.stellarPublicKey],
     ]);
-    await this.stellar.submitSignedTransaction(signedXdr, this.attendeeSubmitOptions());
+    await this.stellar.submitSignedTransaction(
+      signedXdr,
+      this.attendeeSubmitOptions(),
+    );
 
     // #375 — the chain is the source of truth for ownership: only record
     // toUserId once the on-chain owner is confirmed to be their wallet.
@@ -785,7 +794,10 @@ export class TicketsService {
       ['price', 2, BigInt(price)],
     ]);
 
-    const { txHash } = await this.stellar.submitSignedTransaction(signedXdr, this.attendeeSubmitOptions());
+    const { txHash } = await this.stellar.submitSignedTransaction(
+      signedXdr,
+      this.attendeeSubmitOptions(),
+    );
     // #376 — store the price the chain actually recorded, not the body's.
     const { resalePrice } = await this.stellar.verifyTicket(
       ticket.chainTicketId,
@@ -926,7 +938,10 @@ export class TicketsService {
       ['owner', 0, owner.stellarPublicKey],
       ['ticket', 1, ticket.chainTicketId],
     ]);
-    await this.stellar.submitSignedTransaction(signedXdr, this.attendeeSubmitOptions());
+    await this.stellar.submitSignedTransaction(
+      signedXdr,
+      this.attendeeSubmitOptions(),
+    );
 
     return this.prisma.$transaction(async (tx) => {
       await tx.ticket.update({
@@ -964,7 +979,10 @@ export class TicketsService {
       ['buyer', 0, buyer.stellarPublicKey],
       ['ticket', 1, ticket.chainTicketId],
     ]);
-    await this.stellar.submitSignedTransaction(signedXdr, this.attendeeSubmitOptions());
+    await this.stellar.submitSignedTransaction(
+      signedXdr,
+      this.attendeeSubmitOptions(),
+    );
 
     return this.prisma.$transaction(async (tx) => {
       await tx.resaleListing.updateMany({
