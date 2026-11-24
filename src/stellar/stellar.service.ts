@@ -68,6 +68,12 @@ export interface ChainTicketEvent {
   chainTicketId: bigint | null;
 }
 
+/** One `getEvents` page, with the RPC's latest ledger for lag tracking (#530). */
+export interface ChainTicketEventPage {
+  events: ChainTicketEvent[];
+  latestLedger: number;
+}
+
 /** The single ticketing-contract call carried by a signed envelope. */
 export interface SignedInvocation {
   functionName: string;
@@ -93,6 +99,13 @@ export interface SignedInvocation {
  */
 /** How long a cached platform-signer account is reused for simulation. */
 const PLATFORM_ACCOUNT_CACHE_TTL_MS = 30_000;
+
+/**
+ * #520 — how long the contract's resale platform fee is cached. The fee is an
+ * admin setting that rarely changes, and the marketplace reads it on every
+ * page, so one RPC simulation a minute is plenty.
+ */
+const RESALE_FEE_CACHE_TTL_MS = 60_000;
 
 /** Default Soroban transaction time-bound for `build*Tx`, in seconds. */
 const DEFAULT_BUILD_TX_TIMEOUT_SECONDS = 300;
@@ -174,6 +187,7 @@ export class StellarService {
     account: Awaited<ReturnType<rpc.Server['getAccount']>>;
     expiresAt: number;
   } | null = null;
+  private resaleFeeCache: { bps: number; expiresAt: number } | null = null;
 
   constructor(private readonly config: ConfigService) {
     const rpcUrl = this.config.getOrThrow<string>('SOROBAN_RPC_URL');
@@ -231,6 +245,11 @@ export class StellarService {
     return {
       status: tx.status,
       latestLedger: tx.latestLedger,
+      // Only a landed (SUCCESS / FAILED) transaction carries a result.
+      resultXdr:
+        tx.status === rpc.Api.GetTransactionStatus.NOT_FOUND
+          ? undefined
+          : tx.resultXdr.toXDR('base64'),
       resultXdr: resultXdr?.toXDR('base64'),
     };
   }
@@ -250,6 +269,38 @@ export class StellarService {
       contractArgs('get_event', { event_id: chainEventId }),
     );
     return { eventId: chainEventId, ...this.decodeEvent(result) };
+  }
+
+  /**
+   * #520 — the platform fee `buy_resale` takes from each resale, in basis
+   * points: `platform_fee().resale_bps`, or 0 when no fee is configured.
+   *
+   * Cached for a minute. When the RPC read fails, the last known value is
+   * returned if there is one; otherwise the error propagates so callers can
+   * decide not to show proceeds rather than show wrong ones.
+   */
+  async getResaleFeeBps(): Promise<number> {
+    const now = Date.now();
+    if (this.resaleFeeCache && this.resaleFeeCache.expiresAt > now) {
+      return this.resaleFeeCache.bps;
+    }
+    try {
+      const result = await this.simulateRead('platform_fee', []);
+      const native = scValToNative(result) as {
+        resale_bps?: number;
+      } | null;
+      const bps = Number(native?.resale_bps ?? 0);
+      this.resaleFeeCache = { bps, expiresAt: now + RESALE_FEE_CACHE_TTL_MS };
+      return bps;
+    } catch (err) {
+      if (this.resaleFeeCache) {
+        this.logger.warn(
+          `Could not refresh the resale fee, using the last known value: ${(err as Error).message}`,
+        );
+        return this.resaleFeeCache.bps;
+      }
+      throw err;
+    }
   }
 
   /**
@@ -569,7 +620,7 @@ export class StellarService {
   async getTicketEvents(
     cursor: string | undefined,
     limit: number,
-  ): Promise<ChainTicketEvent[]> {
+  ): Promise<ChainTicketEventPage> {
     const start = cursor
       ? { cursor }
       : {
@@ -585,7 +636,10 @@ export class StellarService {
         limit,
       }),
     );
-    return response.events.map((event) => this.decodeTicketEvent(event));
+    return {
+      events: response.events.map((event) => this.decodeTicketEvent(event)),
+      latestLedger: response.latestLedger,
+    };
   }
 
   decodeSignedInvocation(signedXdr: string): SignedInvocation {
@@ -733,6 +787,10 @@ export class StellarService {
         : (payload as { ticket_id?: unknown } | null)?.ticket_id;
     return {
       id: event.id,
+      // stellar-sdk 14+ dropped `pagingToken` from `getEvents` results; the
+      // event id is the RPC's pagination cursor. Reading the old field stored
+      // `undefined` as the indexer cursor, so the cursor upsert failed.
+      pagingToken: event.id,
       pagingToken:
         (event as unknown as { pagingToken?: string }).pagingToken ?? event.id,
       ledger: event.ledger,

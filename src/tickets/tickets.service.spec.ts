@@ -16,7 +16,7 @@ import {
   TicketTypeSoldOutError,
 } from '../common/errors/domain.error';
 import { UNASSIGNED_SEAT } from '../common/constants/seat.constant';
-import { Prisma } from '@prisma/client';
+import { EventStatus, Prisma, ResaleListingStatus } from '@prisma/client';
 import { TicketsService } from './tickets.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { OrganizationsService } from '../organizations/organizations.service';
@@ -146,6 +146,7 @@ describe('TicketsService', () => {
       verifyTicket: jest.fn(),
       decodeSignedInvocation: jest.fn(),
       txHashOf: jest.fn().mockReturnValue('hash-1'),
+      getResaleFeeBps: jest.fn().mockResolvedValue(0),
     };
     offlineTokens = {
       sign: jest.fn().mockReturnValue({
@@ -1846,6 +1847,134 @@ describe('TicketsService', () => {
 
       expect(page.items[0].royaltyFee).toBe(0n);
       expect(page.items[0].sellerProceeds).toBe(5_000n);
+    });
+  });
+
+  describe('findActiveResaleListings — stale listings (#521)', () => {
+    beforeEach(() => {
+      jest.useFakeTimers({ now: new Date('2026-11-23T12:00:00.000Z') });
+      prisma.resaleListing.findMany.mockResolvedValue([]);
+    });
+    afterEach(() => jest.useRealTimers());
+
+    const whereOf = () =>
+      (
+        prisma.resaleListing.findMany.mock.calls[0] as [
+          { where: Record<string, unknown> },
+        ]
+      )[0].where;
+
+    it('only lists tickets for published, live events that have not started', async () => {
+      await service.findActiveResaleListings(undefined, 10);
+
+      expect(whereOf()).toMatchObject({
+        status: ResaleListingStatus.ACTIVE,
+        ticket: {
+          event: {
+            status: EventStatus.PUBLISHED,
+            deletedAt: null,
+            startsAt: { gt: new Date('2026-11-23T12:00:00.000Z') },
+          },
+        },
+      });
+    });
+
+    it('drops listings past their own expiresAt', async () => {
+      await service.findActiveResaleListings(undefined, 10);
+
+      expect(whereOf().AND).toContainEqual({
+        OR: [
+          { expiresAt: null },
+          { expiresAt: { gt: new Date('2026-11-23T12:00:00.000Z') } },
+        ],
+      });
+    });
+
+    it('keeps the cursor condition alongside the stale-listing filters', async () => {
+      const cursor = Buffer.from(
+        '2026-09-01T00:00:00.000Z|listing-9',
+        'utf8',
+      ).toString('base64url');
+
+      await service.findActiveResaleListings(cursor, 10);
+
+      const where = whereOf();
+      expect(where.AND).toHaveLength(2);
+      expect(where.AND).toContainEqual({
+        OR: [
+          { createdAt: { lt: new Date('2026-09-01T00:00:00.000Z') } },
+          {
+            createdAt: new Date('2026-09-01T00:00:00.000Z'),
+            id: { lt: 'listing-9' },
+          },
+        ],
+      });
+      expect(where.ticket).toBeDefined();
+    });
+  });
+
+  describe('findActiveResaleListings — platform resale fee (#520)', () => {
+    const listing = {
+      id: 'listing-1',
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      price: 10_000n,
+      ticket: {
+        event: { royaltyBps: 500 },
+        ticketType: { price: 1_000n },
+      },
+      seller: { name: 'Alice' },
+    };
+
+    it('deducts the configured resale fee, matching the contract split', async () => {
+      stellar.getResaleFeeBps.mockResolvedValue(250);
+      prisma.resaleListing.findMany.mockResolvedValue([listing]);
+
+      const page = await service.findActiveResaleListings(undefined, 10);
+
+      // royalty = floor(10_000 * 500 / 10_000) = 500
+      // fee     = floor(10_000 * 250 / 10_000) = 250
+      // seller  = 10_000 - 500 - 250          = 9_250
+      expect(page.items[0]).toMatchObject({
+        royaltyFee: 500n,
+        platformFee: 250n,
+        sellerProceeds: 9_250n,
+      });
+    });
+
+    it('rounds each part down and gives the seller the remainder', () => {
+      // 999 * 333 / 10_000 = 33.2 -> 33; 999 * 125 / 10_000 = 12.4 -> 12
+      expect(TicketsService.computeResaleSplit(999n, 333, 125)).toEqual({
+        royaltyFee: 33n,
+        platformFee: 12n,
+        sellerProceeds: 954n,
+      });
+    });
+
+    it('reads the fee once per page, and not at all for an empty page', async () => {
+      prisma.resaleListing.findMany.mockResolvedValue([
+        listing,
+        { ...listing, id: 'listing-2' },
+      ]);
+      await service.findActiveResaleListings(undefined, 10);
+      expect(stellar.getResaleFeeBps).toHaveBeenCalledTimes(1);
+
+      stellar.getResaleFeeBps.mockClear();
+      prisma.resaleListing.findMany.mockResolvedValue([]);
+      await service.findActiveResaleListings(undefined, 10);
+      expect(stellar.getResaleFeeBps).not.toHaveBeenCalled();
+    });
+
+    it('omits proceeds rather than overstating them when the fee cannot be read', async () => {
+      stellar.getResaleFeeBps.mockRejectedValue(new Error('RPC unavailable'));
+      prisma.resaleListing.findMany.mockResolvedValue([listing]);
+
+      const page = await service.findActiveResaleListings(undefined, 10);
+
+      expect(page.items[0]).toMatchObject({
+        royaltyFee: 500n,
+        platformFee: null,
+        sellerProceeds: null,
+      });
     });
   });
 

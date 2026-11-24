@@ -1,13 +1,37 @@
 import { Injectable } from '@nestjs/common';
-import { TicketStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChainTicketEvent, StellarService } from '../stellar/stellar.service';
+import { CHAIN_STATUS_TO_DB_STATUS } from '../stellar/ticket-status';
 
 /** Name of the `IndexerCursor` row this indexer advances. */
 export const TICKET_EVENTS_CURSOR = 'ticketing-events';
 
 /** Events fetched per poll. */
 export const INDEXER_PAGE_SIZE = 100;
+
+/** Outcome of one {@link ChainEventIndexer.indexOnce} poll. */
+export interface IndexerRunResult {
+  /** Events that changed state (re-delivered events are not counted). */
+  applied: number;
+  /** Events returned by the RPC for this page. */
+  fetched: number;
+  /** How many ledgers the cursor trails the RPC's latest ledger (#530). */
+  lagLedgers: number;
+}
+
+/**
+ * #530 — ledgers between the last event applied and the RPC's latest ledger.
+ * A short page means the stream is drained up to `latestLedger`, so the lag is
+ * zero; a full page means more events are waiting after its last one.
+ */
+export function indexerLagLedgers(
+  events: ChainTicketEvent[],
+  latestLedger: number,
+): number {
+  const last = events[events.length - 1];
+  if (!last || events.length < INDEXER_PAGE_SIZE) return 0;
+  return Math.max(0, latestLedger - last.ledger);
+}
 
 /**
  * Applies ticketing-contract events (`TicketIssued`, `TicketCheckedIn`) to the
@@ -27,12 +51,12 @@ export class ChainEventIndexer {
     private readonly stellar: StellarService,
   ) {}
 
-  /** Polls one page after the stored cursor. Returns how many events changed state. */
-  async indexOnce(): Promise<number> {
+  /** Polls one page after the stored cursor. */
+  async indexOnce(): Promise<IndexerRunResult> {
     const stored = await this.prisma.indexerCursor.findUnique({
       where: { name: TICKET_EVENTS_CURSOR },
     });
-    const events = await this.stellar.getTicketEvents(
+    const { events, latestLedger } = await this.stellar.getTicketEvents(
       stored?.cursor,
       INDEXER_PAGE_SIZE,
     );
@@ -43,11 +67,28 @@ export class ChainEventIndexer {
         applied++;
       }
     }
-    return applied;
+    return {
+      applied,
+      fetched: events.length,
+      lagLedgers: indexerLagLedgers(events, latestLedger),
+    };
   }
 
   /** Returns false when the event was already applied. */
-  private apply(event: ChainTicketEvent): Promise<boolean> {
+  private async apply(event: ChainTicketEvent): Promise<boolean> {
+    // #529 — a check-in only uses a ticket up once its entries are exhausted:
+    // a multi-use pass stays `Valid` on chain until its last entry, and
+    // `pass_out` can hand one back. So the status to cache comes from the
+    // contract, not from the event name. The read happens before the DB
+    // transaction; if it fails, nothing commits and the cursor stays put, so
+    // the next poll retries this event.
+    const checkedInStatus =
+      event.name === 'TicketCheckedIn' && event.chainTicketId !== null
+        ? CHAIN_STATUS_TO_DB_STATUS[
+            (await this.stellar.verifyTicket(event.chainTicketId)).status
+          ]
+        : null;
+
     return this.prisma.$transaction(async (tx) => {
       // `skipDuplicates` turns a repeat into `ON CONFLICT DO NOTHING`, so the
       // transaction stays usable. A caught unique-violation would abort it.
@@ -57,10 +98,10 @@ export class ChainEventIndexer {
       });
       const isNew = count > 0;
 
-      if (isNew && event.name === 'TicketCheckedIn' && event.chainTicketId !== null) {
+      if (isNew && checkedInStatus !== null && event.chainTicketId !== null) {
         await tx.ticket.updateMany({
           where: { chainTicketId: event.chainTicketId },
-          data: { status: TicketStatus.USED },
+          data: { status: checkedInStatus },
         });
       }
 

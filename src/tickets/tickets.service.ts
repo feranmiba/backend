@@ -862,6 +862,25 @@ export class TicketsService {
     return (originalPrice * BigInt(maxResaleMultiplierBps)) / 10_000n;
   }
 
+  /**
+   * #520 — mirrors the contract's `resale_split`: the royalty and the platform
+   * fee are each `floor(price * bps / 10_000)`, and the seller keeps the
+   * remainder, so the three parts always sum to `price`.
+   */
+  static computeResaleSplit(
+    price: bigint,
+    royaltyBps: number,
+    platformFeeBps: number,
+  ): { royaltyFee: bigint; platformFee: bigint; sellerProceeds: bigint } {
+    const royaltyFee = (price * BigInt(royaltyBps)) / 10_000n;
+    const platformFee = (price * BigInt(platformFeeBps)) / 10_000n;
+    return {
+      royaltyFee,
+      platformFee,
+      sellerProceeds: price - royaltyFee - platformFee,
+    };
+  }
+
   private assertResalePriceCap(
     price: bigint,
     originalPrice: bigint,
@@ -1135,10 +1154,26 @@ export class TicketsService {
     const take = Math.min(Math.max(limit, 1), 100);
     const cursorFilter = cursor ? this.resaleCursorWhere(cursor) : undefined;
 
+    const now = new Date();
     const rows = await this.prisma.resaleListing.findMany({
       where: {
         status: ResaleListingStatus.ACTIVE,
-        ...(cursorFilter ?? {}),
+        // #521 — hide listings nobody can buy: the contract rejects
+        // `buy_resale` once the event has started (its resale cutoff falls
+        // before `startsAt`), and a cancelled, unpublished or deleted event's
+        // tickets are not for sale. A listing past its own `expiresAt` is
+        // also dropped before the expiry job gets to it.
+        ticket: {
+          event: {
+            status: EventStatus.PUBLISHED,
+            deletedAt: null,
+            startsAt: { gt: now },
+          },
+        },
+        AND: [
+          { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+          ...(cursorFilter ? [cursorFilter] : []),
+        ],
       },
       // #374 — the marketplace is readable by any authenticated user, so the
       // query must project only the fields it renders. Never include the whole
@@ -1179,23 +1214,43 @@ export class TicketsService {
     const nextCursor =
       hasMore && last ? this.encodeResaleCursor(last.createdAt, last.id) : null;
 
-    // #320 — Compute royalty fee and seller proceeds for each listing so
-    // clients don't have to duplicate the contract math.
-    // royaltyFee   = floor(price * royaltyBps / 10_000)
-    // sellerProceeds = price - royaltyFee
+    // #320 / #520 — precompute the settlement split so clients don't have to
+    // duplicate the contract math. It mirrors `resale_split` in `buy_resale`,
+    // including the platform's resale fee, so `sellerProceeds` is what the
+    // seller actually receives.
+    const platformFeeBps = items.length > 0 ? await this.resaleFeeBps() : 0;
     const enrichedItems = items.map((listing) => {
-      const price = listing.price;
-      const royaltyBps = listing.ticket.event.royaltyBps;
-      const royaltyFee = (price * BigInt(royaltyBps)) / 10_000n;
-      const sellerProceeds = price - royaltyFee;
+      const { price } = listing;
+      const { royaltyBps } = listing.ticket.event;
+      if (platformFeeBps === null) {
+        // The fee could not be read: show the royalty, but don't guess at
+        // proceeds — an overstated figure is the bug #520 fixed.
+        return {
+          ...listing,
+          royaltyFee: (price * BigInt(royaltyBps)) / 10_000n,
+          platformFee: null,
+          sellerProceeds: null,
+        };
+      }
       return {
         ...listing,
-        royaltyFee,
-        sellerProceeds,
+        ...TicketsService.computeResaleSplit(price, royaltyBps, platformFeeBps),
       };
     });
 
     return { items: enrichedItems, nextCursor, limit: take };
+  }
+
+  /** The contract's resale fee in bps, or null when it cannot be read (#520). */
+  private async resaleFeeBps(): Promise<number | null> {
+    try {
+      return await this.stellar.getResaleFeeBps();
+    } catch (err) {
+      this.logger.warn(
+        `Resale fee unavailable; omitting seller proceeds: ${(err as Error).message}`,
+      );
+      return null;
+    }
   }
 
   findMine(userId: string, status?: TicketStatus) {

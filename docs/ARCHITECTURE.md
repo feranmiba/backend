@@ -211,7 +211,7 @@ sequenceDiagram
     rect rgb(240, 255, 240)
         Note over Client,RPC: Buy from the marketplace (buyer signs)
         Client->>API: GET /v1/tickets/resale
-        API-->>Client: ACTIVE listings with royaltyFee and sellerProceeds precomputed
+        API-->>Client: ACTIVE listings with royaltyFee, platformFee and sellerProceeds precomputed
         Client->>API: POST /v1/tickets/:ticketId/buy-resale
         API->>Postgres: ticket status must be RESALE
         API->>Stellar: buildBuyResaleTx(buyer, chainTicketId)
