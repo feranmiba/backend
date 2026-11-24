@@ -5,23 +5,14 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
-import { TicketStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { StellarService } from '../stellar/stellar.service';
-import type { OnChainTicket } from '../stellar/stellar.service';
+import { CHAIN_STATUS_TO_DB_STATUS } from '../stellar/ticket-status';
 
 export const TICKET_STATUS_RECONCILIATION_JOB_NAME =
   'ticket-status-reconciliation';
 export const DEFAULT_TICKET_RECONCILIATION_INTERVAL_MINUTES = 60;
 const RECONCILIATION_PAGE_SIZE = 100;
-
-const CHAIN_STATUS_TO_DB_STATUS: Record<OnChainTicket['status'], TicketStatus> =
-  {
-    Valid: TicketStatus.VALID,
-    Used: TicketStatus.USED,
-    Revoked: TicketStatus.REVOKED,
-    Resale: TicketStatus.RESALE,
-  };
 
 export interface TicketStatusReconciliationCounts {
   checked: number;

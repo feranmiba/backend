@@ -53,7 +53,8 @@ describe('TicketsController', () => {
     confirmCheckIn: jest.fn(),
     buildRevokeTx: jest.fn(),
     confirmRevoke: jest.fn(),
-    revokeBatch: jest.fn(),
+    buildRevokeBatch: jest.fn(),
+    confirmRevokeBatch: jest.fn(),
     buildListForResaleTx: jest.fn(),
     confirmListForResale: jest.fn(),
     getPriceHistory: jest.fn(),
@@ -667,13 +668,34 @@ describe('TicketsController', () => {
     });
 
     it('POST /events/:eventId/revoke-batch forwards ticket ids', async () => {
-      service.revokeBatch.mockResolvedValue({ revoked: 2 });
+      service.buildRevokeBatch.mockResolvedValue({
+        unsignedXdrs: ['AAAA'],
+        chunkSize: 35,
+      });
       await http()
         .post('/tickets/events/e1/revoke-batch')
         .set(AUTH)
         .send({ ticketIds: ['a', 'b'] })
         .expect(201);
-      expect(service.revokeBatch).toHaveBeenCalledWith(uid, 'e1', ['a', 'b']);
+      expect(service.buildRevokeBatch).toHaveBeenCalledWith(uid, 'e1', [
+        'a',
+        'b',
+      ]);
+    });
+
+    it('POST /events/:eventId/confirm-revoke-batch forwards ids and signed XDRs', async () => {
+      service.confirmRevokeBatch.mockResolvedValue({ count: 2 });
+      await http()
+        .post('/tickets/events/e1/confirm-revoke-batch')
+        .set(AUTH)
+        .send({ ticketIds: ['a', 'b'], signedXdrs: ['AAAA'] })
+        .expect(201);
+      expect(service.confirmRevokeBatch).toHaveBeenCalledWith(
+        uid,
+        'e1',
+        ['a', 'b'],
+        ['AAAA'],
+      );
     });
 
     it.each([
@@ -686,7 +708,16 @@ describe('TicketsController', () => {
         .set(AUTH)
         .send(body)
         .expect(400);
-      expect(service.revokeBatch).not.toHaveBeenCalled();
+      expect(service.buildRevokeBatch).not.toHaveBeenCalled();
+    });
+
+    it('rejects a confirm-revoke-batch body without signed XDRs', async () => {
+      await http()
+        .post('/tickets/events/e1/confirm-revoke-batch')
+        .set(AUTH)
+        .send({ ticketIds: ['a'] })
+        .expect(400);
+      expect(service.confirmRevokeBatch).not.toHaveBeenCalled();
     });
   });
 

@@ -46,8 +46,9 @@ The flag is read from the environment when the app module is built, not from
 `ConfigModule.forRoot()` in `AppModule` (that call is what loads `.env`).
 
 It covers jobs registered through `SchedulerModule`. The pending-transaction
-cleanup (`src/pending-tx/`) and event reminders (`src/events/`) run on their own
-`setInterval` timers and are not affected.
+cleanup (`src/pending-tx/`), event reminders (`src/events/`), resale expiry
+(`src/tickets/`), and waitlist offer expiration roll-forward (`src/waitlist/`)
+run on their own `setInterval` timers and are not affected.
 
 ## Ticket status reconciliation
 
@@ -61,3 +62,30 @@ are logged and do not prevent other tickets from being checked.
 Set `TICKET_RECONCILIATION_INTERVAL_MINUTES` to an integer from 1 to 1440;
 the default is 60 minutes. Like the cron jobs, this job is not registered when
 `SCHEDULER_ENABLED=false`.
+
+## Chain event indexer
+
+`ChainEventIndexerJob` (`src/indexer/chain-event-indexer.job.ts`) keeps the
+cached ticket status in step with the ticketing contract's events. Each poll
+calls `ChainEventIndexer.indexOnce`, which reads one page of up to 100 events
+after the stored `IndexerCursor` and applies them (see
+[`docs/FEATURE_FLAGS.md`](FEATURE_FLAGS.md#indexer-chain-event-ingestion)).
+
+| Setting | Effect |
+|---|---|
+| `FEATURE_INDEXER` | Must be exactly `true` for polls to do anything. Off by default, so production runs the job only when this is set. |
+| `SCHEDULER_ENABLED` | `false` stops the job from being registered at all. |
+| `INDEXER_POLL_INTERVAL_SECONDS` | Interval between polls, an integer from 5 to 3600. Default 30. |
+
+- **Overlap:** a poll that outlasts the interval makes the next tick skip, with
+  a warning, instead of running two polls over the same page.
+- **Failures:** a failed poll is logged and retried on the next tick. Events
+  are applied one at a time, each with its cursor advance, so a failure part
+  way through a page resumes after the last applied event.
+- **Instances:** like the other jobs, it runs on every instance. Applying an
+  event is idempotent (`ProcessedChainEvent`), so two instances polling at
+  once do not double-apply, but running it on one worker avoids wasted RPC
+  calls.
+- **Metrics:** each poll is recorded in `GET /metrics`; see
+  [`docs/OBSERVABILITY.md`](OBSERVABILITY.md#chain-indexer-metrics).
+

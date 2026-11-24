@@ -34,7 +34,8 @@ describe('SchedulerModule.forRoot', () => {
   it('registers the schedule module and the sample job by default', () => {
     const dynamicModule = SchedulerModule.forRoot({});
 
-    expect(dynamicModule.imports).toHaveLength(3);
+    // ScheduleModule, IndexerModule, StellarModule, and MetricsModule (#530).
+    expect(dynamicModule.imports).toHaveLength(4);
     expect(dynamicModule.providers).toContain(HeartbeatJob);
     expect(dynamicModule.providers).toContain(TicketStatusReconciliationJob);
   });

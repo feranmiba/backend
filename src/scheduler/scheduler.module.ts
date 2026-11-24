@@ -5,6 +5,7 @@ import { HeartbeatJob } from './heartbeat.job';
 import { ChainEventIndexerJob } from '../indexer/chain-event-indexer.job';
 import { IndexerModule } from '../indexer/indexer.module';
 import { StellarModule } from '../stellar/stellar.module';
+import { MetricsModule } from '../common/metrics/metrics.module';
 import { TicketStatusReconciliationJob } from './ticket-status-reconciliation.job';
 
 /** Cron jobs run unless `SCHEDULER_ENABLED=false`. */
@@ -31,7 +32,12 @@ export class SchedulerModule {
     }
     return {
       module: SchedulerModule,
-      imports: [ScheduleModule.forRoot(), IndexerModule, StellarModule],
+      imports: [
+        ScheduleModule.forRoot(),
+        IndexerModule,
+        StellarModule,
+        MetricsModule,
+      ],
       providers: [
         HeartbeatJob,
         ChainEventIndexerJob,

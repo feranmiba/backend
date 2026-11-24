@@ -8,6 +8,7 @@ import {
   ChainEventIndexer,
   INDEXER_PAGE_SIZE,
   TICKET_EVENTS_CURSOR,
+  indexerLagLedgers,
 } from './chain-event-indexer.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type {
@@ -53,7 +54,10 @@ function setup() {
     $transaction: jest.fn((cb: (client: typeof tx) => unknown) => cb(tx)),
   };
   const stellar = {
-    getTicketEvents: jest.fn().mockResolvedValue(fixturePage),
+    getTicketEvents: jest
+      .fn()
+      .mockResolvedValue({ events: fixturePage, latestLedger: 110 }),
+    verifyTicket: jest.fn().mockResolvedValue({ status: 'Used' }),
   };
   const indexer = new ChainEventIndexer(
     prisma as unknown as PrismaService,
@@ -95,9 +99,10 @@ describe('ChainEventIndexer', () => {
   it('applies every new event and reports how many changed state', async () => {
     const { indexer, tx } = setup();
 
-    const applied = await indexer.indexOnce();
+    const { applied, fetched } = await indexer.indexOnce();
 
     expect(applied).toBe(3);
+    expect(fetched).toBe(3);
     expect(tx.processedChainEvent.createMany).toHaveBeenCalledTimes(3);
   });
 
@@ -110,6 +115,55 @@ describe('ChainEventIndexer', () => {
     expect(tx.ticket.updateMany).toHaveBeenCalledWith({
       where: { chainTicketId: 7n },
       data: { status: 'USED' },
+    });
+  });
+
+  describe('multi-use passes (#529)', () => {
+    it('keeps a pass VALID when the chain says it has entries left', async () => {
+      const { indexer, stellar, tx } = setup();
+      stellar.verifyTicket.mockResolvedValue({ status: 'Valid' });
+
+      await indexer.indexOnce();
+
+      expect(stellar.verifyTicket).toHaveBeenCalledWith(7n);
+      expect(tx.ticket.updateMany).toHaveBeenCalledWith({
+        where: { chainTicketId: 7n },
+        data: { status: 'VALID' },
+      });
+    });
+
+    it('marks a pass USED once the chain reports its last entry consumed', async () => {
+      const { indexer, stellar, tx } = setup();
+      stellar.verifyTicket.mockResolvedValue({ status: 'Used' });
+
+      await indexer.indexOnce();
+
+      expect(tx.ticket.updateMany).toHaveBeenCalledWith({
+        where: { chainTicketId: 7n },
+        data: { status: 'USED' },
+      });
+    });
+
+    it('only reads the chain for check-ins that carry a ticket id', async () => {
+      const { indexer, stellar } = setup();
+
+      await indexer.indexOnce();
+
+      expect(stellar.verifyTicket).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves the event unapplied and the cursor in place when the read fails', async () => {
+      const { indexer, stellar, tx } = setup();
+      stellar.verifyTicket.mockRejectedValue(new Error('RPC unavailable'));
+
+      await expect(indexer.indexOnce()).rejects.toThrow('RPC unavailable');
+
+      // Only the TicketIssued event before the check-in committed.
+      expect(tx.processedChainEvent.createMany).toHaveBeenCalledTimes(1);
+      expect(tx.indexerCursor.upsert).toHaveBeenLastCalledWith(
+        expect.objectContaining({ update: { cursor: 'pt-1' } }),
+      );
+      expect(tx.ticket.updateMany).not.toHaveBeenCalled();
     });
   });
 
@@ -129,11 +183,43 @@ describe('ChainEventIndexer', () => {
     const { indexer, tx } = setup();
     tx.processedChainEvent.createMany.mockResolvedValue({ count: 0 });
 
-    const applied = await indexer.indexOnce();
+    const { applied } = await indexer.indexOnce();
 
     expect(applied).toBe(0);
     expect(tx.ticket.updateMany).not.toHaveBeenCalled();
     // The cursor still moves, so a re-delivered page does not stall the indexer.
     expect(tx.indexerCursor.upsert).toHaveBeenCalledTimes(3);
+  });
+
+  describe('lag (#530)', () => {
+    const page = (count: number, lastLedger: number): ChainTicketEvent[] =>
+      Array.from({ length: count }, (_, i) => ({
+        id: `evt-${i}`,
+        pagingToken: `evt-${i}`,
+        ledger: lastLedger - (count - 1 - i),
+        name: 'TicketIssued',
+        chainTicketId: BigInt(i),
+      }));
+
+    it('is zero when the page is short, because the stream is drained', () => {
+      expect(indexerLagLedgers(page(3, 100), 500)).toBe(0);
+      expect(indexerLagLedgers([], 500)).toBe(0);
+    });
+
+    it('is the ledger gap after a full page', () => {
+      expect(indexerLagLedgers(page(INDEXER_PAGE_SIZE, 400), 500)).toBe(100);
+    });
+
+    it('is reported by indexOnce', async () => {
+      const { indexer, stellar } = setup();
+      stellar.getTicketEvents.mockResolvedValue({
+        events: page(INDEXER_PAGE_SIZE, 1_000),
+        latestLedger: 1_250,
+      });
+
+      const { lagLedgers } = await indexer.indexOnce();
+
+      expect(lagLedgers).toBe(250);
+    });
   });
 });
