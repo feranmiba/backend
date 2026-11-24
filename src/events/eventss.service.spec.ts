@@ -18,6 +18,16 @@ it('rejects a stale holder after someone else re-reserved the id', async () => {
   jest.useRealTimers();
 });
 
+async hasPendingReservation(chainEventId: string, reservationId: string): Promise<boolean> {
+  const r = await this.findReservation(chainEventId); // <- your existing lookup (repo/map/query)
+  if (!r) return false;
+  return (
+    r.reservationId === reservationId &&   // same holder, not someone who re-reserved after expiry
+    r.status === 'pending' &&              // not already confirmed or released
+    r.expiresAt.getTime() > Date.now()     // not expired
+  );
+}
+
 it('confirms a live reservation', async () => {
   const { reservationId } = await service.reserve(chainEventId);
   await expect(service.confirm(chainEventId, reservationId)).resolves.toBeDefined();
